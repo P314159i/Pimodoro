@@ -246,13 +246,58 @@ class TaskDialog(tk.Toplevel):
         title_entry.focus_set()
 
         ttk.Label(form, text="Priority").grid(row=2, column=0, sticky="w", pady=6)
-        ttk.Combobox(
+
+        priority_frame = tk.Frame(
             form,
-            textvariable=self.priority_var,
-            values=list(PRIORITY_LABELS),
-            state="readonly",
-            width=14,
-        ).grid(row=2, column=1, sticky="w", pady=6)
+            background=parent.theme["background"],
+            borderwidth=0,
+        )
+        priority_frame.grid(row=2, column=1, sticky="w", pady=6)
+
+        self.priority_buttons = {}
+
+        selected_icons = {
+            "P1": "🔴",
+            "P2": "🟠",
+            "P3": "🔵",
+            "P4": "⚪",
+        }
+
+        priority_icons = {
+            "P1": "🔥",
+            "P2": "🐇",
+            "P3": "🐢",
+            "P4": "☕",
+        }
+
+
+        def select_priority(p):
+            self.priority_var.set(p)
+
+            for name, button in self.priority_buttons.items():
+                if name == p:
+                    button.config(text=selected_icons[name])
+                else:
+                    button.config(text=priority_icons[name])
+
+
+        for index, priority in enumerate(("P1", "P2", "P3", "P4")):
+            button = tk.Label(
+                priority_frame,
+                text=priority_icons[priority],
+                font=("Noto Color Emoji", 16),
+                background=parent.theme["background"],
+                cursor="hand2",
+            )
+
+            button.bind(
+                "<Button-1>",
+                lambda event, p=priority: select_priority(p)
+            )
+
+            button.grid(row=0, column=index, padx=4)
+
+            self.priority_buttons[priority] = button
         ttk.Label(form, text="Tracking").grid(row=2, column=2, sticky="e", padx=(18, 8), pady=6)
         ttk.Combobox(
             form,
@@ -793,6 +838,7 @@ class PiModoro(tk.Tk):
         self.selected_task_ids_set: set[int] = set()
         self.expanded_task_ids: set[int] = set()
         self.task_cards: dict[int, tk.Frame] = {}
+        self.priority_lanes: dict[str, tk.Frame] = {}
         self.task_card_order: list[int] = []
         self.task_priorities: dict[int, str] = {}
         self.task_fonts: list[tkfont.Font] = []
@@ -1210,6 +1256,7 @@ class PiModoro(tk.Tk):
         for child in self.task_list_inner.winfo_children():
             child.destroy()
         self.task_cards.clear()
+        self.priority_lanes.clear()
         self.task_card_order.clear()
         self.task_priorities.clear()
         self.task_fonts.clear()
@@ -1233,6 +1280,7 @@ class PiModoro(tk.Tk):
                 padx=4,
             )
             lane.grid(row=0, column=column, sticky="nsew")
+            self.priority_lanes[priority] = lane
             tk.Label(
                 lane,
                 text=PRIORITY_LABELS[priority],
@@ -1765,6 +1813,23 @@ class PiModoro(tk.Tk):
         target_id = task_id
         target_distance: int | None = None
         source_priority = self.task_priorities.get(task_id)
+
+        # Dropping over another priority column changes the task priority.
+        dropped_priority = None
+        x_root = event.x_root
+        for priority, lane in self.priority_lanes.items():
+            left = lane.winfo_rootx()
+            right = left + lane.winfo_width()
+            if left <= x_root <= right:
+                dropped_priority = priority
+                break
+
+        if dropped_priority and dropped_priority != source_priority:
+            self.db.update_task(task_id, {"priority": dropped_priority})
+            self.db.set_task_order([item for item in self.task_card_order if item != task_id])
+            self.render_tasks(self.selected_task_ids_set)
+            return
+
         for candidate_id, card in self.task_cards.items():
             if self.task_priorities.get(candidate_id) != source_priority:
                 continue
