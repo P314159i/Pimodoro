@@ -1051,17 +1051,49 @@ class PiModoro(tk.Tk):
         self.header_totals.grid(row=0, column=1, rowspan=2, sticky="e")
 
     def _update_daily_totals_label(self) -> None:
-        if not hasattr(self, "daily_totals_label"):
+        if not all(
+            hasattr(self, name)
+            for name in ("work_duration_label", "break_duration_label", "daily_totals_label")
+        ):
             return
-        work = 0
-        breaks = 0
+
+        total_work = 0
+        total_break = 0
+        remaining_work = 0
+        remaining_break = 0
+
         try:
-            for task in self.db.get_active_tasks(date.today()):
-                work += int(task.get("task_work_minutes", 0) or 0)
-                breaks += int(task.get("task_break_minutes", 0) or 0)
-            self.daily_totals_label.configure(text=f"Today: {work} min Work   &   {breaks} min Break")
-        except Exception:
-            self.daily_totals_label.configure(text="Work: 0 min, Break: 0 min")
+            tasks = self.db.get_active_tasks(date.today())
+            for task in tasks:
+                work_minutes = max(0, int(task.get("task_work_minutes", 0) or 0))
+                break_minutes = max(0, int(task.get("task_break_minutes", 0) or 0))
+                total_work += work_minutes
+                total_break += break_minutes
+
+                done = bool(
+                    task.get("display_done")
+                    or task.get("status") == "completed"
+                )
+                if not done:
+                    remaining_work += work_minutes
+                    remaining_break += break_minutes
+
+            self.work_duration_label.configure(
+                text=f"Total work today: {format_duration(total_work * 60)}"
+            )
+            self.break_duration_label.configure(
+                text=f"Total break today: {format_duration(total_break * 60)}"
+            )
+            self.daily_totals_label.configure(
+                text=(
+                    f"Left: {format_duration(remaining_work * 60)} work"
+                    f"   ·   {format_duration(remaining_break * 60)} break"
+                )
+            )
+        except (TypeError, ValueError, tk.TclError):
+            self.work_duration_label.configure(text="Total work today: 0h 00m")
+            self.break_duration_label.configure(text="Total break today: 0h 00m")
+            self.daily_totals_label.configure(text="Left: 0h 00m work   ·   0h 00m break")
 
     def show_page(self, name: str) -> None:
         if name not in self.pages:
@@ -1090,29 +1122,25 @@ class PiModoro(tk.Tk):
         timer.columnconfigure(1, weight=1)
         self.work_duration_label = tk.Label(
             timer,
-            text="Work 25m",
+            text="Total work today: 0h 00m",
             background=self.theme["background"],
             foreground=self.theme["muted"],
-            cursor="hand2",
-            font=("TkDefaultFont", 11, "underline"),
+            font=("TkDefaultFont", 11),
         )
         self.work_duration_label.grid(row=0, column=0, sticky="e", padx=(0, 18))
-        self.work_duration_label.bind("<Button-1>", lambda _event: self.edit_selected_durations())
         self.timer_label = ttk.Label(timer, text="25:00", font=("TkDefaultFont", 56, "bold"), anchor="center")
         self.timer_label.grid(row=0, column=1, sticky="ew")
         self.break_duration_label = tk.Label(
             timer,
-            text="Break 5m",
+            text="Total break today: 0h 00m",
             background=self.theme["background"],
             foreground=self.theme["muted"],
-            cursor="hand2",
-            font=("TkDefaultFont", 11, "underline"),
+            font=("TkDefaultFont", 11),
         )
         self.break_duration_label.grid(row=0, column=2, sticky="w", padx=(18, 0))
-        self.break_duration_label.bind("<Button-1>", lambda _event: self.edit_selected_durations())
         self.timer_task_label = ttk.Label(timer, text="No task selected", style="Muted.TLabel", anchor="center")
         self.timer_task_label.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(12, 4))
-        self.daily_totals_label = ttk.Label(timer, text="Work: 0 min · Break: 0 min", style="Muted.TLabel", anchor="center")
+        self.daily_totals_label = ttk.Label(timer, text="Left: 0h 00m work · 0h 00m break", style="Muted.TLabel", anchor="center")
         self.daily_totals_label.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(4, 14))
         self._update_daily_totals_label()
         controls = ttk.Frame(timer)
@@ -2157,10 +2185,6 @@ class PiModoro(tk.Tk):
         minutes, seconds = divmod(max(0, self.timer_remaining), 60)
         self.timer_label.configure(text=f"{minutes:02d}:{seconds:02d}")
         task_id = self.timer_task_id if self.timer_running or self.timer_task_id else self.selected_task_id
-        work = self._task_duration_minutes(task_id, "work")
-        break_minutes = self._task_duration_minutes(task_id, "break")
-        self.work_duration_label.configure(text=f"Work {work}m")
-        self.break_duration_label.configure(text=f"Break {break_minutes}m")
         task = self.db.get_task(task_id) if task_id else None
         mode = "WORK" if self.timer_mode == "work" else "BREAK"
         self.timer_task_label.configure(text=f"{mode} · {task['title'] if task else 'No task selected'}")
@@ -3400,6 +3424,7 @@ class PiModoro(tk.Tk):
         if hasattr(self, "calendar_grid"):
             self.refresh_calendar()
         self._update_timer_labels()
+        self._update_daily_totals_label()
         self._refresh_clock_button()
 
     def _tick_header(self) -> None:
