@@ -1050,6 +1050,19 @@ class PiModoro(tk.Tk):
         self.header_totals = ttk.Label(header, text="", style="Panel.TLabel", justify="right")
         self.header_totals.grid(row=0, column=1, rowspan=2, sticky="e")
 
+    def _update_daily_totals_label(self) -> None:
+        if not hasattr(self, "daily_totals_label"):
+            return
+        work = 0
+        breaks = 0
+        try:
+            for task in self.db.get_active_tasks(date.today()):
+                work += int(task.get("task_work_minutes", 0) or 0)
+                breaks += int(task.get("task_break_minutes", 0) or 0)
+            self.daily_totals_label.configure(text=f"Today: {work} min Work   &   {breaks} min Break")
+        except Exception:
+            self.daily_totals_label.configure(text="Work: 0 min, Break: 0 min")
+
     def show_page(self, name: str) -> None:
         if name not in self.pages:
             return
@@ -1072,7 +1085,7 @@ class PiModoro(tk.Tk):
         page.columnconfigure(0, weight=1)
         page.rowconfigure(2, weight=1)
 
-        timer = ttk.Frame(page, padding=(18, 14, 18, 8))
+        timer = ttk.Frame(page, padding=(18, 22, 18, 18))
         timer.grid(row=0, column=0, sticky="ew")
         timer.columnconfigure(1, weight=1)
         self.work_duration_label = tk.Label(
@@ -1098,9 +1111,12 @@ class PiModoro(tk.Tk):
         self.break_duration_label.grid(row=0, column=2, sticky="w", padx=(18, 0))
         self.break_duration_label.bind("<Button-1>", lambda _event: self.edit_selected_durations())
         self.timer_task_label = ttk.Label(timer, text="No task selected", style="Muted.TLabel", anchor="center")
-        self.timer_task_label.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, 8))
+        self.timer_task_label.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(12, 4))
+        self.daily_totals_label = ttk.Label(timer, text="Work: 0 min · Break: 0 min", style="Muted.TLabel", anchor="center")
+        self.daily_totals_label.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(4, 14))
+        self._update_daily_totals_label()
         controls = ttk.Frame(timer)
-        controls.grid(row=2, column=0, columnspan=3)
+        controls.grid(row=3, column=0, columnspan=3)
         ttk.Button(controls, text="Work", command=lambda: self.start_timer_mode("work")).grid(row=0, column=0, padx=4)
         ttk.Button(controls, text="Break", command=lambda: self.start_timer_mode("break")).grid(row=0, column=1, padx=4)
         ttk.Button(controls, text="Reset", command=self.reset_timer).grid(row=0, column=2, padx=4)
@@ -3397,8 +3413,7 @@ class PiModoro(tk.Tk):
         self.header_time.configure(text=now.strftime("%H:%M:%S"))
         today = date.today().isoformat()
         clocked = self.db.work_seconds(today) + self._live_clock_seconds_today()
-        pomo = self.db.pomodoro_totals(date.today(), date.today()).get(today, 0)
-        self.header_totals.configure(text=f"Clocked {format_duration(clocked)}\nTask timer {format_duration(pomo)}")
+        self.header_totals.configure(text=f"Clocked {format_duration(clocked)}")
         self.sidebar_work_total.configure(text=f"Today {format_duration(clocked)}")
         self.after(1000, self._tick_header)
 
