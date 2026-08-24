@@ -1,3 +1,4 @@
 
 .pimodoro.db
 *.db
+.__pycache__
