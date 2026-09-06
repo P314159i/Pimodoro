@@ -19,8 +19,8 @@ APP_NAME = "PiModoro"
 DB_FILE = Path.home() / ".pimodoro.db"
 
 GRAVEYARD_FONT_CHOICES = ("Domestic Manners",)
-GRAVEYARD_FONT_SIZE = 14
-GRAVEYARD_FONT_PREVIEW_SIZE = 20
+GRAVEYARD_FONT_SIZE = 12
+GRAVEYARD_FONT_PREVIEW_SIZE = 14
 GRAVEYARD_LINE_GAP = 10
 GRAVEYARD_RULE_BASELINE_OFFSET = 1
 GRAVEYARD_MARGIN_X = 36
@@ -3400,7 +3400,7 @@ class PiModoro(tk.Tk):
 
         self.graveyard_font_preview = tk.Label(
             general,
-            text="Graveyard — Aa Bb Cc 123",
+            text="Graveyard",
             background=self.theme["background"],
             foreground=self.theme["text"],
             font=(preview_family, GRAVEYARD_FONT_PREVIEW_SIZE),
