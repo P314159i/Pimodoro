@@ -6,7 +6,6 @@ import json
 import math
 import shutil
 import subprocess
-import sys
 import tkinter as tk
 import tkinter.font as tkfont
 from datetime import date, datetime, timedelta
@@ -14,12 +13,16 @@ from pathlib import Path
 from tkinter import colorchooser, filedialog, messagebox, ttk
 from typing import Any, Iterable, Mapping
 
-from pimodoro_db import Database, now_iso
+from pimodoro_db import Database
 
 APP_NAME = "PiModoro"
 DB_FILE = Path.home() / ".pimodoro.db"
 
 GRAVEYARD_FONT_CHOICES = ("Domestic Manners",)
+GRAVEYARD_FONT_SIZE = 14
+GRAVEYARD_FONT_PREVIEW_SIZE = 20
+GRAVEYARD_LINE_GAP = 10
+GRAVEYARD_RULE_BASELINE_OFFSET = 1
 GRAVEYARD_MARGIN_X = 36
 GRAVEYARD_MARGIN_WIDTH = 2
 GRAVEYARD_TEXT_GAP = 8
@@ -55,11 +58,6 @@ TRACKING_LABELS = {
     "pomodoro": "Pomodoro progress",
     "both": "Both",
 }
-
-
-def resource_path(name: str) -> Path:
-    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
-    return base / name
 
 
 def contrast_text(hex_color: str) -> str:
@@ -984,41 +982,6 @@ class PiModoro(tk.Tk):
         self._startup_settings_refresh_done = True
         self._rebuild_ui_for_theme(save_graveyard=False)
 
-    def _reapply_persisted_theme(self) -> None:
-        """Force saved colours onto widgets once Tk has mapped the window."""
-        self._apply_theme()
-        color_map = {
-            str(DEFAULT_THEME[key]).lower(): str(self.theme[key])
-            for key in DEFAULT_THEME
-            if key != "opacity" and key in self.theme and self.theme[key] != DEFAULT_THEME[key]
-        }
-        options = (
-            "background", "foreground", "activebackground", "activeforeground",
-            "insertbackground", "highlightbackground", "highlightcolor",
-        )
-
-        def recolor(widget: tk.Misc) -> None:
-            updates: dict[str, str] = {}
-            for option in options:
-                try:
-                    current = str(widget.cget(option)).lower()
-                except (tk.TclError, TypeError):
-                    continue
-                replacement = color_map.get(current)
-                if replacement is not None:
-                    updates[option] = replacement
-            if updates:
-                try:
-                    widget.configure(**updates)
-                except tk.TclError:
-                    pass
-            for child in widget.winfo_children():
-                recolor(child)
-
-        recolor(self)
-        if self.current_page in self.pages:
-            self.show_page(self.current_page)
-
     def _apply_theme(self) -> None:
         theme = self.theme
         self.configure(background=theme["background"])
@@ -1685,10 +1648,6 @@ class PiModoro(tk.Tk):
         self._refresh_task_card_selection()
         self._update_timer_labels()
 
-    def on_task_selection(self, _event: tk.Event | None = None) -> None:
-        if self.selected_task_id is not None:
-            self.select_task_card(self.selected_task_id)
-
     def open_add_dialog(
         self,
         prefill: str | None = None,
@@ -1844,9 +1803,6 @@ class PiModoro(tk.Tk):
         editor.bind("<Escape>", lambda _event: finish(False))
         return "break"
 
-    def begin_inline_edit(self, event: tk.Event) -> None:
-        return
-
     def toggle_task_done(self, task_id: int) -> None:
         self.save_open_accordions()
         task = self.db.get_task(task_id)
@@ -1863,12 +1819,6 @@ class PiModoro(tk.Tk):
         self.db.archive_completed_before(date.today())
         self.selected_task_id = task_id
         self.selected_task_ids_set = {task_id}
-        self.refresh_all()
-
-    def complete_selected_tasks(self) -> None:
-        for task_id in self.selected_task_ids():
-            self.db.complete_task(task_id, date.today())
-        self.db.archive_completed_before(date.today())
         self.refresh_all()
 
     def archive_selected_tasks(self) -> None:
@@ -2008,136 +1958,6 @@ class PiModoro(tk.Tk):
         order.insert(target_index, task_id)
         self.db.set_task_order(order)
         self.render_tasks(self.selected_task_ids_set)
-
-    def _drag_start(self, event: tk.Event) -> None:
-        return
-
-    def _drag_motion(self, event: tk.Event) -> None:
-        return
-
-    def _drag_end(self, _event: tk.Event) -> None:
-        return
-
-    # ---------- Add text page ----------
-
-    def _build_add_page(self, page: ttk.Frame) -> None:
-        page.columnconfigure(0, weight=1)
-        page.rowconfigure(1, weight=1)
-        ttk.Label(
-            page,
-            text="Paste or type tasks",
-            font=("TkDefaultFont", 16, "bold"),
-        ).grid(row=0, column=0, sticky="w", padx=20, pady=(20, 8))
-        self.add_text_widget = tk.Text(
-            page,
-            wrap="word",
-            background=self.theme["note_paper"],
-            foreground=self.theme["note_text"],
-            insertbackground=self.theme["note_text"],
-            relief="flat",
-            padx=14,
-            pady=14,
-        )
-        self.add_text_widget.grid(row=1, column=0, sticky="nsew", padx=20, pady=8)
-        actions = ttk.Frame(page, padding=(20, 4, 20, 18))
-        actions.grid(row=2, column=0, sticky="ew")
-        ttk.Button(actions, text="Add text", command=lambda: self.handle_pasted_text(self.add_text_widget.get("1.0", "end-1c"))).grid(
-            row=0, column=0, padx=(0, 6)
-        )
-        ttk.Button(actions, text="Clear", command=lambda: self.add_text_widget.delete("1.0", "end")).grid(row=0, column=1)
-        ttk.Label(
-            actions,
-            text="Multiline text asks whether each line is a separate task or the entire paste is one task.",
-            style="Muted.TLabel",
-        ).grid(row=0, column=2, sticky="w", padx=(16, 0))
-
-    # ---------- Details page ----------
-
-    def _build_details_page(self, page: ttk.Frame) -> None:
-        page.columnconfigure(0, weight=1)
-        page.rowconfigure(3, weight=1)
-        self.details_heading = ttk.Label(page, text="Select a task", font=("TkDefaultFont", 16, "bold"))
-        self.details_heading.grid(row=0, column=0, sticky="w", padx=20, pady=(20, 10))
-        title_frame = ttk.Frame(page, padding=(20, 0, 20, 8))
-        title_frame.grid(row=1, column=0, sticky="ew")
-        title_frame.columnconfigure(0, weight=1)
-        self.details_title_var = tk.StringVar()
-        self.details_title_entry = ttk.Entry(title_frame, textvariable=self.details_title_var)
-        self.details_title_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        bind_entry_editor_shortcuts(self.details_title_entry)
-        ttk.Button(title_frame, text="Advanced edit", command=self.edit_selected_task).grid(row=0, column=1)
-
-        durations = ttk.Frame(page, padding=(20, 0, 20, 8))
-        durations.grid(row=2, column=0, sticky="ew")
-        self.details_duration_label = ttk.Label(durations, text="")
-        self.details_duration_label.grid(row=0, column=0, sticky="w")
-        ttk.Button(durations, text="Change timers", command=self.edit_selected_durations).grid(row=0, column=1, padx=(12, 0))
-
-        body = ttk.Frame(page, padding=(20, 0, 20, 8))
-        body.grid(row=3, column=0, sticky="nsew")
-        body.columnconfigure(0, weight=2)
-        body.columnconfigure(1, weight=1)
-        body.rowconfigure(1, weight=1)
-        ttk.Label(body, text="Notes").grid(row=0, column=0, sticky="w")
-        ttk.Label(body, text="Subtasks, one per line").grid(row=0, column=1, sticky="w", padx=(12, 0))
-        self.details_notes = tk.Text(
-            body,
-            wrap="word",
-            background=self.theme["note_paper"],
-            foreground=self.theme["note_text"],
-            insertbackground=self.theme["note_text"],
-            relief="flat",
-            padx=14,
-            pady=14,
-        )
-        self.details_notes.grid(row=1, column=0, sticky="nsew", pady=(5, 0))
-        self.details_subtasks = tk.Text(body, wrap="word", height=10)
-        self.details_subtasks.grid(row=1, column=1, sticky="nsew", padx=(12, 0), pady=(5, 0))
-        actions = ttk.Frame(page, padding=(20, 4, 20, 18))
-        actions.grid(row=4, column=0, sticky="ew")
-        ttk.Button(actions, text="Save task details", command=self.save_details).grid(row=0, column=0)
-        self.details_status = ttk.Label(actions, text="", style="Muted.TLabel")
-        self.details_status.grid(row=0, column=1, padx=(12, 0))
-
-    def load_details(self) -> None:
-        task = self.db.get_task(self.selected_task_id) if self.selected_task_id else None
-        self.details_notes.delete("1.0", "end")
-        self.details_subtasks.delete("1.0", "end")
-        if not task:
-            self.details_heading.configure(text="Select a task from List")
-            self.details_title_var.set("")
-            self.details_duration_label.configure(text="")
-            return
-        self.details_heading.configure(text=f"{task['priority']} task")
-        self.details_title_var.set(task["title"])
-        self.details_notes.insert("1.0", task.get("notes", ""))
-        self.details_subtasks.insert(
-            "1.0",
-            "\n".join(item["text"] for item in self.db.get_subtasks(int(task["id"]))),
-        )
-        self.details_duration_label.configure(
-            text=f"Work {task.get('task_work_minutes', 25)} min · Break {task.get('task_break_minutes', 5)} min"
-        )
-        self.details_status.configure(text="")
-
-    def save_details(self) -> None:
-        if self.selected_task_id is None:
-            return
-        title = " ".join(self.details_title_var.get().split())
-        if not title:
-            messagebox.showerror(APP_NAME, "Task title cannot be empty.", parent=self)
-            return
-        self.db.update_task(
-            self.selected_task_id,
-            {"title": title, "notes": self.details_notes.get("1.0", "end-1c")},
-        )
-        self.db.replace_subtasks(
-            self.selected_task_id,
-            [line.strip() for line in self.details_subtasks.get("1.0", "end-1c").splitlines() if line.strip()],
-        )
-        self.details_status.configure(text="Saved")
-        self.render_tasks([self.selected_task_id])
-        self.refresh_history()
 
     # ---------- Task timer ----------
 
@@ -3063,32 +2883,64 @@ class PiModoro(tk.Tk):
 
     # ---------- Graveyards ----------
 
-    def _available_graveyard_fonts(self) -> list[str]:
-        """Return the single font choice reserved for the Graveyard."""
-        return list(GRAVEYARD_FONT_CHOICES)
-
-    def _graveyard_handwriting_font(self) -> str:
-        """Restore the Graveyard choice, falling back to its sole font."""
-        choices = self._available_graveyard_fonts()
+    def _selected_graveyard_font(self) -> str:
+        """Restore a valid Graveyard font selection."""
         saved = str(self.db.get_setting("graveyard_font", "") or "").strip()
-        if saved in choices:
+        if saved in GRAVEYARD_FONT_CHOICES:
             return saved
-        return choices[0]
+        return GRAVEYARD_FONT_CHOICES[0]
+
+    def _resolve_graveyard_font(self, requested: str) -> tuple[str, str]:
+        """Resolve the selected family and explain any Tk font substitution."""
+        try:
+            installed = {
+                str(family).strip().casefold(): str(family).strip()
+                for family in tkfont.families(self)
+                if str(family).strip()
+            }
+        except tk.TclError:
+            installed = {}
+
+        resolved = installed.get(requested.casefold())
+        if resolved:
+            return resolved, f"Preview and Graveyard are using {resolved}."
+
+        try:
+            fallback = str(
+                tkfont.nametofont("TkDefaultFont", root=self).actual("family")
+            )
+        except (tk.TclError, TypeError):
+            fallback = "TkDefaultFont"
+        message = (
+            f"{requested} is not installed, so Tk is showing {fallback}. "
+            f"Install {requested} and restart PiModoro to use it."
+        )
+        return fallback, message
 
     def _apply_graveyard_font(self, *, persist: bool = False) -> None:
-        """Apply the Settings font choice to the Graveyard and its live preview."""
+        """Apply the selected font to both the preview and Graveyard editor."""
         if not hasattr(self, "graveyard_font_var"):
             return
-        family = self.graveyard_font_var.get().strip()
+        requested = self.graveyard_font_var.get().strip()
+        if requested not in GRAVEYARD_FONT_CHOICES:
+            requested = GRAVEYARD_FONT_CHOICES[0]
+            self.graveyard_font_var.set(requested)
+
+        family, message = self._resolve_graveyard_font(requested)
         self.graveyard_font_family = family
         if persist:
-            self.db.set_setting("graveyard_font", family)
+            self.db.set_setting("graveyard_font", requested)
 
         if hasattr(self, "graveyard_font_preview") and self.graveyard_font_preview.winfo_exists():
-            self.graveyard_font_preview.configure(font=(family, 18))
+            self.graveyard_font_preview.configure(
+                font=(family, GRAVEYARD_FONT_PREVIEW_SIZE)
+            )
+
+        if hasattr(self, "graveyard_font_status") and self.graveyard_font_status.winfo_exists():
+            self.graveyard_font_status.configure(text=message)
 
         if hasattr(self, "graveyard_text") and self.graveyard_text.winfo_exists():
-            self.graveyard_text.configure(font=(family, 16))
+            self.graveyard_text.configure(font=(family, GRAVEYARD_FONT_SIZE))
             # Let Tk finish laying out the new font before querying baselines.
             self.after_idle(self._redraw_graveyard_rules)
 
@@ -3102,7 +2954,8 @@ class PiModoro(tk.Tk):
 
         paper = self.theme["note_paper"]
         ink = self.theme["graveyard_text"]
-        self.graveyard_font_family = self._graveyard_handwriting_font()
+        requested_font = self._selected_graveyard_font()
+        self.graveyard_font_family = self._resolve_graveyard_font(requested_font)[0]
         self.graveyard_save_job: str | None = None
 
         notebook = tk.Frame(page, background=paper, borderwidth=0, highlightthickness=0)
@@ -3181,12 +3034,12 @@ class PiModoro(tk.Tk):
             relief="flat",
             borderwidth=0,
             highlightthickness=0,
-            font=(self.graveyard_font_family, 16),
+            font=(self.graveyard_font_family, GRAVEYARD_FONT_SIZE),
             padx=GRAVEYARD_TEXT_LEFT,
             pady=18,
-            spacing1=2,
-            spacing2=4,
-            spacing3=18,
+            spacing1=0,
+            spacing2=GRAVEYARD_LINE_GAP,
+            spacing3=GRAVEYARD_LINE_GAP,
             tabs=("32p",),
         )
         self.graveyard_rule_redraw_job: str | None = None
@@ -3319,8 +3172,7 @@ class PiModoro(tk.Tk):
             fallback_pitch = max(
                 28,
                 int(font.metrics("linespace"))
-                + int(text_widget.cget("spacing1"))
-                + int(text_widget.cget("spacing3")),
+                + GRAVEYARD_LINE_GAP,
             )
         except (tk.TclError, TypeError, ValueError):
             return
@@ -3330,8 +3182,8 @@ class PiModoro(tk.Tk):
         probe_y = 0
 
         # dlineinfo() reports the real on-screen row and baseline after wrapping,
-        # scrolling and font changes. Put each blue rule on the text baseline so
-        # the writing sits directly on it like writing on ruled notebook paper.
+        # scrolling and font changes. Put each blue rule one pixel below the
+        # baseline so the writing rests on it without the overlay hiding ink.
         while probe_y < height:
             try:
                 index = text_widget.index(f"@{GRAVEYARD_TEXT_LEFT},{probe_y}")
@@ -3350,7 +3202,7 @@ class PiModoro(tk.Tk):
 
             if row_y not in seen_rows:
                 seen_rows.add(row_y)
-                rule_y = row_y + baseline
+                rule_y = row_y + baseline + GRAVEYARD_RULE_BASELINE_OFFSET
                 if 0 <= rule_y < height:
                     positions.append(rule_y)
 
@@ -3533,12 +3385,13 @@ class PiModoro(tk.Tk):
         ttk.Checkbutton(general, text="Lock Linux screen after completed work timer", variable=self.lock_enabled).grid(row=2, column=0, columnspan=4, sticky="w", pady=8)
 
         ttk.Label(general, text="Graveyard font").grid(row=3, column=0, sticky="w", pady=(10, 6))
-        self.graveyard_font_choices = self._available_graveyard_fonts()
-        self.graveyard_font_var = tk.StringVar(value=self._graveyard_handwriting_font())
+        selected_font = self._selected_graveyard_font()
+        preview_family, font_message = self._resolve_graveyard_font(selected_font)
+        self.graveyard_font_var = tk.StringVar(value=selected_font)
         self.graveyard_font_combo = ttk.Combobox(
             general,
             textvariable=self.graveyard_font_var,
-            values=self.graveyard_font_choices,
+            values=GRAVEYARD_FONT_CHOICES,
             state="readonly",
             width=24,
         )
@@ -3547,10 +3400,10 @@ class PiModoro(tk.Tk):
 
         self.graveyard_font_preview = tk.Label(
             general,
-            text="Graveyard",
+            text="Graveyard — Aa Bb Cc 123",
             background=self.theme["background"],
             foreground=self.theme["text"],
-            font=(self.graveyard_font_var.get(), 18),
+            font=(preview_family, GRAVEYARD_FONT_PREVIEW_SIZE),
             anchor="w",
             padx=6,
         )
@@ -3563,11 +3416,19 @@ class PiModoro(tk.Tk):
             pady=(10, 6),
         )
 
-        ttk.Label(
+        self.graveyard_font_status = ttk.Label(
             general,
-            text="Font selection is available only for Graveyard; one handwriting option is currently provided.",
+            text=font_message,
             style="Muted.TLabel",
-        ).grid(row=4, column=0, columnspan=4, sticky="w", pady=(0, 6))
+            wraplength=760,
+        )
+        self.graveyard_font_status.grid(
+            row=4,
+            column=0,
+            columnspan=4,
+            sticky="w",
+            pady=(0, 6),
+        )
         ttk.Button(general, text="Save settings", command=self.save_settings).grid(row=5, column=0, sticky="w", pady=(12, 0))
 
         color_keys = [
