@@ -3058,51 +3058,99 @@ class PiModoro(tk.Tk):
     # ---------- Graveyards ----------
 
     def _available_graveyard_fonts(self) -> list[str]:
-        """Return fonts Tk can actually use, with handwriting-like choices first."""
-        available = sorted({str(family).strip() for family in tkfont.families(self) if str(family).strip()})
-        preferred = (
+        """Return a short, intentional list of installed Graveyard fonts."""
+        available = {
+            str(family).strip()
+            for family in tkfont.families(self)
+            if str(family).strip()
+        }
+
+        # Keep this deliberately short. The screenshot reference uses neat,
+        # hand-printed lettering (Domestic Manners), not cursive/calligraphy.
+        casual_candidates = (
+            "Dustismo",
+            "Balker",
+            "Ubuntu",
+            "Noto Sans",
+            "DejaVu Sans",
+            "Liberation Sans",
+        )
+        formal_candidates = (
+            "Liberation Serif",
+            "DejaVu Serif",
+            "Noto Serif",
+            "Times New Roman",
+        )
+        handwritten_candidates = (
+            "Domestic Manners",
             "Architects Daughter",
-            "Kalam",
+            "Patrick Hand",
+            "Coming Soon",
+            "Handlee",
             "Comic Neue",
             "Segoe Print",
-            "Bradley Hand",
-            "Purisa",
             "Chilanka",
-            "Comic Sans MS",
-            "URW Chancery L",
+            "Bradley Hand",
         )
-        ordered = [family for family in preferred if family in available]
-        handwriting_words = ("hand", "script", "comic", "chancery", "cursive", "print", "purisa", "chilanka")
-        ordered.extend(
-            family for family in available
-            if family not in ordered and any(word in family.lower() for word in handwriting_words)
-        )
-        ordered.extend(family for family in available if family not in ordered)
-        return ordered
+
+        # Always expose Domestic Manners in the GUI instead of filtering it out.
+        choices: list[str] = ["Domestic Manners"]
+
+        def add_first(candidates: tuple[str, ...], amount: int) -> None:
+            added = 0
+            for family in candidates:
+                if family in available and family not in choices:
+                    choices.append(family)
+                    added += 1
+                    if added >= amount:
+                        return
+
+        # Keep the rest of the list short.
+        add_first(casual_candidates, 2)
+        add_first(formal_candidates, 2)
+        add_first(tuple(f for f in handwritten_candidates if f != "Domestic Manners"), 1)
+
+        return choices
 
     def _graveyard_handwriting_font(self) -> str:
-        """Use the saved Graveyard font, otherwise pick the best installed handwriting-like font."""
+        """Restore the saved choice; otherwise prefer the neat handwritten face."""
         choices = self._available_graveyard_fonts()
         saved = str(self.db.get_setting("graveyard_font", "") or "").strip()
         if saved in choices:
             return saved
-        return choices[0] if choices else "TkDefaultFont"
+
+        for family in (
+            "Domestic Manners",
+            "Architects Daughter",
+            "Patrick Hand",
+            "Coming Soon",
+            "Handlee",
+            "Comic Neue",
+            "Segoe Print",
+            "Chilanka",
+            "Bradley Hand",
+        ):
+            if family in choices:
+                return family
+
+        return choices[0]
 
     def _apply_graveyard_font(self, *, persist: bool = False) -> None:
-        """Apply the Settings font choice to the Graveyard, optionally saving it."""
+        """Apply the Settings font choice to the Graveyard and its live preview."""
         if not hasattr(self, "graveyard_font_var"):
             return
         family = self.graveyard_font_var.get().strip()
-        available = set(tkfont.families(self))
-        if family not in available:
-            return
         self.graveyard_font_family = family
         if persist:
             self.db.set_setting("graveyard_font", family)
+
+        if hasattr(self, "graveyard_font_preview") and self.graveyard_font_preview.winfo_exists():
+            self.graveyard_font_preview.configure(font=(family, 18))
+
         if hasattr(self, "graveyard_text") and self.graveyard_text.winfo_exists():
-            self.graveyard_text.configure(font=(family, 13))
-            if hasattr(self, "_redraw_graveyard_rules"):
-                self.after_idle(self._redraw_graveyard_rules)
+            self.graveyard_text.configure(font=(family, 16))
+            # Let Tk finish laying out the new font before querying baselines.
+            self.after_idle(self._redraw_graveyard_rules)
 
     def _preview_graveyard_font(self, _event: tk.Event | None = None) -> None:
         self._apply_graveyard_font(persist=False)
@@ -3129,7 +3177,7 @@ class PiModoro(tk.Tk):
             heading,
             text="Graveyard of untimed tasks and ideas to do in the never-coming future.",
             background=paper,
-            foreground="#a3a3a3",
+            foreground=ink,
             font=("TkDefaultFont", 9, "italic"),
             anchor="w",
             justify="left",
@@ -3140,7 +3188,7 @@ class PiModoro(tk.Tk):
             heading,
             text="Autosaved",
             background=paper,
-            foreground="#a3a3a3",
+            foreground=ink,
             font=("TkDefaultFont", 8),
             anchor="e",
             padx=18,
@@ -3193,32 +3241,39 @@ class PiModoro(tk.Tk):
             relief="flat",
             borderwidth=0,
             highlightthickness=0,
-            font=(self.graveyard_font_family, 13),
+            font=(self.graveyard_font_family, 16),
             padx=54,
             pady=18,
-            spacing1=4,
-            spacing3=6,
+            spacing1=2,
+            spacing2=4,
+            spacing3=18,
             tabs=("32p",),
         )
-        graveyard_scroll = ttk.Scrollbar(editor_shell, orient="vertical", command=self.graveyard_text.yview)
-        self.graveyard_text.configure(yscrollcommand=graveyard_scroll.set)
+        self.graveyard_rule_redraw_job: str | None = None
+        self.graveyard_scroll = ttk.Scrollbar(
+            editor_shell,
+            orient="vertical",
+            command=self._graveyard_yview,
+        )
+        self.graveyard_text.configure(yscrollcommand=self._graveyard_scrollbar_set)
         self.graveyard_text.grid(row=0, column=0, sticky="nsew")
-        graveyard_scroll.grid(row=0, column=1, sticky="ns")
+        self.graveyard_scroll.grid(row=0, column=1, sticky="ns")
 
-        # Notebook-paper ruling.  These are visual overlays only; the Graveyard
-        # remains one continuous tk.Text editor with normal selection/editing.
+        # Notebook-paper ruling. These are thin visual overlays only; the
+        # Graveyard remains one continuous tk.Text editor.
         self.graveyard_rule_widgets: list[tk.Frame] = []
         self.graveyard_margin_rule = tk.Frame(
             self.graveyard_text,
-            background="#cf6868",
+            background="#d58d8d",
             borderwidth=0,
             highlightthickness=0,
             cursor="xterm",
         )
-        self.graveyard_margin_rule.place(x=52, y=0, width=2, relheight=1.0)
+        # Red notebook margin: fixed near the left edge while the text scrolls.
+        self.graveyard_margin_rule.place(x=36, y=0, width=2, relheight=1.0)
         self._bind_graveyard_rule_pointer(self.graveyard_margin_rule)
         self.graveyard_text.bind("<Configure>", self._graveyard_text_configure, add="+")
-        self.after_idle(self._redraw_graveyard_rules)
+        self._schedule_graveyard_rule_redraw()
 
         saved = str(self.db.get_setting("graveyard_notes", "") or "")
         if saved:
@@ -3267,12 +3322,42 @@ class PiModoro(tk.Tk):
         return "break"
 
     def _graveyard_text_configure(self, _event: tk.Event | None = None) -> None:
-        self.after_idle(self._redraw_graveyard_rules)
+        self._schedule_graveyard_rule_redraw()
+
+    def _schedule_graveyard_rule_redraw(self) -> None:
+        """Coalesce rapid scroll/configure events into one notebook-rule redraw."""
+        if not hasattr(self, "graveyard_text"):
+            return
+        if getattr(self, "graveyard_rule_redraw_job", None):
+            return
+
+        def redraw() -> None:
+            self.graveyard_rule_redraw_job = None
+            self._redraw_graveyard_rules()
+
+        try:
+            self.graveyard_rule_redraw_job = self.after_idle(redraw)
+        except tk.TclError:
+            self.graveyard_rule_redraw_job = None
+
+    def _graveyard_scrollbar_set(self, first: str, last: str) -> None:
+        """Update the scrollbar and keep paper rules synchronized with text."""
+        if hasattr(self, "graveyard_scroll") and self.graveyard_scroll.winfo_exists():
+            self.graveyard_scroll.set(first, last)
+        self._schedule_graveyard_rule_redraw()
+
+    def _graveyard_yview(self, *args: str) -> None:
+        """Scrollbar command wrapper so drag/page scrolling also moves the rules."""
+        if not hasattr(self, "graveyard_text"):
+            return
+        self.graveyard_text.yview(*args)
+        self._schedule_graveyard_rule_redraw()
 
     def _redraw_graveyard_rules(self) -> None:
-        """Draw blue horizontal notebook rules across the visible editor area."""
+        """Draw notebook rules below the actual visible Text rows."""
         if not hasattr(self, "graveyard_text") or not self.graveyard_text.winfo_exists():
             return
+
         for rule in getattr(self, "graveyard_rule_widgets", []):
             try:
                 rule.destroy()
@@ -3280,35 +3365,101 @@ class PiModoro(tk.Tk):
                 pass
         self.graveyard_rule_widgets = []
 
+        text_widget = self.graveyard_text
         try:
-            width = self.graveyard_text.winfo_width()
-            height = self.graveyard_text.winfo_height()
-            font = tkfont.Font(font=self.graveyard_text.cget("font"))
-            line_step = max(24, int(font.metrics("linespace")) + 10)
-        except tk.TclError:
+            text_widget.update_idletasks()
+            width = max(1, text_widget.winfo_width())
+            height = max(1, text_widget.winfo_height())
+            font = tkfont.Font(font=text_widget.cget("font"))
+            descent = max(1, int(font.metrics("descent")))
+            fallback_pitch = max(
+                28,
+                int(font.metrics("linespace"))
+                + int(text_widget.cget("spacing1"))
+                + int(text_widget.cget("spacing2"))
+                + int(text_widget.cget("spacing3")),
+            )
+        except (tk.TclError, TypeError, ValueError):
             return
 
-        # First rule sits below the first writing line; subsequent rules repeat
-        # at the Text widget's line spacing.  Start just right of the red margin.
-        first_y = 18 + line_step
-        rule_width = max(1, width - 54)
-        y = first_y
+        positions: list[int] = []
+        seen_rows: set[int] = set()
+        probe_y = 0
+
+        # dlineinfo() reports the real on-screen row and baseline after wrapping,
+        # scrolling and font changes.  Put the blue rule below the glyph descent,
+        # inside the intentional lower spacing of each row.
+        while probe_y < height:
+            try:
+                index = text_widget.index(f"@60,{probe_y}")
+                info = text_widget.dlineinfo(index)
+            except tk.TclError:
+                info = None
+
+            if info is None:
+                probe_y += 2
+                continue
+
+            _x, row_y, _row_width, row_height, baseline = info
+            row_y = int(row_y)
+            row_height = max(1, int(row_height))
+            baseline = int(baseline)
+
+            if row_y not in seen_rows:
+                seen_rows.add(row_y)
+                # Six pixels below the font's descent gives the handwritten
+                # notebook effect: letters sit above the rule instead of being
+                # crossed by it.
+                rule_y = row_y + baseline + descent + 6
+                if 0 <= rule_y < height:
+                    positions.append(rule_y)
+
+            probe_y = max(probe_y + 1, row_y + row_height)
+
+        # Infer the actual visible pitch when possible.  This keeps blank ruled
+        # paper identical to the rows Tk has laid out for the current font.
+        pitch = fallback_pitch
+        if len(positions) >= 2:
+            gaps = [
+                right - left
+                for left, right in zip(positions, positions[1:])
+                if right > left
+            ]
+            if gaps:
+                gaps.sort()
+                pitch = gaps[len(gaps) // 2]
+
+        if positions:
+            y = positions[-1] + pitch
+        else:
+            try:
+                y = int(text_widget.cget("pady")) + pitch
+            except (tk.TclError, TypeError, ValueError):
+                y = 18 + pitch
+
         while y < height:
+            positions.append(y)
+            y += pitch
+
+        for y in sorted(set(positions)):
             rule = tk.Frame(
-                self.graveyard_text,
-                background="#9bb7d2",
+                text_widget,
+                background="#b6ccdc",
                 borderwidth=0,
                 highlightthickness=0,
                 cursor="xterm",
             )
-            rule.place(x=54, y=y, width=rule_width, height=1)
+            # The blue rule runs edge-to-edge, including left of the red margin.
+            rule.place(x=0, y=y, width=width, height=1)
             self._bind_graveyard_rule_pointer(rule)
             self.graveyard_rule_widgets.append(rule)
-            y += line_step
 
-        # Keep the red margin above horizontal rules where they intersect.
+        # Red notebook margin stays fixed near the left edge.
         if hasattr(self, "graveyard_margin_rule"):
-            self.graveyard_margin_rule.lift()
+            try:
+                self.graveyard_margin_rule.lift()
+            except tk.TclError:
+                pass
 
     def _graveyard_virtual_event(self, event_name: str) -> None:
         if not hasattr(self, "graveyard_text"):
@@ -3360,6 +3511,7 @@ class PiModoro(tk.Tk):
         if hasattr(self, "graveyard_status"):
             self.graveyard_status.configure(text="Unsaved…")
         self._schedule_graveyard_save()
+        self._schedule_graveyard_rule_redraw()
 
     def _schedule_graveyard_save(self, _event: tk.Event | None = None) -> None:
         if getattr(self, "graveyard_save_job", None):
@@ -3416,6 +3568,7 @@ class PiModoro(tk.Tk):
             magnitude = max(1, abs(delta) // 120)
             steps = -magnitude if delta > 0 else magnitude
         self.graveyard_text.yview_scroll(steps, "units")
+        self._schedule_graveyard_rule_redraw()
         return "break"
 
     # ---------- Settings and CSV ----------
@@ -3447,13 +3600,32 @@ class PiModoro(tk.Tk):
             textvariable=self.graveyard_font_var,
             values=self.graveyard_font_choices,
             state="readonly",
-            width=32,
+            width=24,
         )
-        self.graveyard_font_combo.grid(row=3, column=1, columnspan=3, sticky="w", padx=(8, 0), pady=(10, 6))
+        self.graveyard_font_combo.grid(row=3, column=1, sticky="w", padx=(8, 12), pady=(10, 6))
         self.graveyard_font_combo.bind("<<ComboboxSelected>>", self._preview_graveyard_font)
+
+        self.graveyard_font_preview = tk.Label(
+            general,
+            text="Graveyard",
+            background=self.theme["background"],
+            foreground=self.theme["text"],
+            font=(self.graveyard_font_var.get(), 18),
+            anchor="w",
+            padx=6,
+        )
+        self.graveyard_font_preview.grid(
+            row=3,
+            column=2,
+            columnspan=2,
+            sticky="w",
+            padx=(4, 0),
+            pady=(10, 6),
+        )
+
         ttk.Label(
             general,
-            text="Only fonts installed on this computer are listed. Selecting one previews it immediately.",
+            text="Short list only: casual, formal, and a Domestic Manners-style handwritten font when installed.",
             style="Muted.TLabel",
         ).grid(row=4, column=0, columnspan=4, sticky="w", pady=(0, 6))
         ttk.Button(general, text="Save settings", command=self.save_settings).grid(row=5, column=0, sticky="w", pady=(12, 0))
