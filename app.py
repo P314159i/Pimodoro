@@ -137,6 +137,102 @@ def lock_screen() -> tuple[bool, str]:
     return False, "No supported Linux screen-lock command was found."
 
 
+def _entry_select_all(event: tk.Event) -> str:
+    """Select all text in a single-line Entry and keep the cursor at the end."""
+    widget = event.widget
+    try:
+        widget.selection_range(0, tk.END)
+        widget.icursor(tk.END)
+    except tk.TclError:
+        pass
+    return "break"
+
+
+def _entry_delete_forward(event: tk.Event) -> str:
+    """Delete the current selection, otherwise the character after the cursor."""
+    widget = event.widget
+    try:
+        if widget.selection_present():
+            widget.delete(tk.SEL_FIRST, tk.SEL_LAST)
+        else:
+            widget.delete(tk.INSERT)
+    except tk.TclError:
+        pass
+    return "break"
+
+
+def _entry_backspace(event: tk.Event) -> str:
+    """Delete the current selection, otherwise the character before the cursor."""
+    widget = event.widget
+    try:
+        if widget.selection_present():
+            widget.delete(tk.SEL_FIRST, tk.SEL_LAST)
+        else:
+            cursor = int(widget.index(tk.INSERT))
+            if cursor > 0:
+                widget.delete(cursor - 1, cursor)
+    except tk.TclError:
+        pass
+    return "break"
+
+
+def _entry_word_target(widget: tk.Widget, direction: int) -> int:
+    text = str(widget.get())
+    cursor = int(widget.index(tk.INSERT))
+    if direction < 0:
+        target = cursor
+        while target > 0 and text[target - 1].isspace():
+            target -= 1
+        while target > 0 and not text[target - 1].isspace():
+            target -= 1
+        return target
+
+    target = cursor
+    length = len(text)
+    while target < length and not text[target].isspace():
+        target += 1
+    while target < length and text[target].isspace():
+        target += 1
+    return target
+
+
+def _entry_move_word(event: tk.Event, direction: int, extend: bool = False) -> str:
+    """Implement Ctrl+Arrow and Ctrl+Shift+Arrow consistently across Tk themes."""
+    widget = event.widget
+    try:
+        cursor = int(widget.index(tk.INSERT))
+        target = _entry_word_target(widget, direction)
+
+        if extend:
+            if widget.selection_present():
+                first = int(widget.index(tk.SEL_FIRST))
+                last = int(widget.index(tk.SEL_LAST))
+                anchor = last if cursor == first else first
+            else:
+                anchor = cursor
+            widget.selection_clear()
+            widget.selection_range(min(anchor, target), max(anchor, target))
+        else:
+            widget.selection_clear()
+
+        widget.icursor(target)
+        widget.xview_moveto(1.0 if target >= len(str(widget.get())) else 0.0)
+    except tk.TclError:
+        pass
+    return "break"
+
+
+def bind_entry_editor_shortcuts(widget: tk.Widget) -> None:
+    """Give task-title entries predictable desktop text-editing shortcuts."""
+    widget.bind("<Control-a>", _entry_select_all)
+    widget.bind("<Control-Left>", lambda event: _entry_move_word(event, -1))
+    widget.bind("<Control-Right>", lambda event: _entry_move_word(event, 1))
+    widget.bind("<Control-Shift-Left>", lambda event: _entry_move_word(event, -1, True))
+    widget.bind("<Control-Shift-Right>", lambda event: _entry_move_word(event, 1, True))
+    widget.bind("<Delete>", _entry_delete_forward)
+    widget.bind("<BackSpace>", _entry_backspace)
+
+
 class TaskDialog(tk.Toplevel):
     """Flat, scrollable task editor that matches the main application background."""
 
@@ -243,6 +339,7 @@ class TaskDialog(tk.Toplevel):
         ttk.Label(form, text="Task").grid(row=1, column=0, sticky="w", pady=6)
         title_entry = ttk.Entry(form, textvariable=self.title_var)
         title_entry.grid(row=1, column=1, columnspan=3, sticky="ew", pady=6)
+        bind_entry_editor_shortcuts(title_entry)
         title_entry.focus_set()
 
         ttk.Label(form, text="Priority").grid(row=2, column=0, sticky="w", pady=6)
@@ -862,14 +959,24 @@ class PiModoro(tk.Tk):
         self._build_ui()
         self._bind_global_scroll_handlers()
         self.refresh_all()
-        # Re-apply persisted colours after Tk has mapped the window, without rebuilding
-        # the interface or stacking extra touchpad bindings.
-        self.after_idle(self._reapply_persisted_theme)
+        # Tk/ttk can finish resolving widget styles only after the window is mapped.
+        # Rebuild the UI once from the already-loaded persisted settings so startup
+        # looks exactly like it does after pressing "Save colours", without writing
+        # anything back to the database.
+        self._startup_settings_refresh_done = False
+        self.after(75, self._apply_persisted_settings_after_map)
         self._tick_header()
         if self.timer_running:
             self._timer_tick()
 
     # ---------- Theme ----------
+
+    def _apply_persisted_settings_after_map(self) -> None:
+        """Rebuild once after mapping so persisted settings are visible immediately."""
+        if getattr(self, "_startup_settings_refresh_done", False):
+            return
+        self._startup_settings_refresh_done = True
+        self._rebuild_ui_for_theme(save_graveyard=False)
 
     def _reapply_persisted_theme(self) -> None:
         """Force saved colours onto widgets once Tk has mapped the window."""
@@ -1156,6 +1263,7 @@ class PiModoro(tk.Tk):
         self.quick_add_var = tk.StringVar()
         self.quick_add_entry = ttk.Entry(addbar, textvariable=self.quick_add_var)
         self.quick_add_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        bind_entry_editor_shortcuts(self.quick_add_entry)
         self.quick_add_entry.bind("<Return>", lambda _event: self.open_add_dialog(default_deadline=date.today().isoformat()))
         self.quick_add_entry.bind("<<Paste>>", self._quick_paste)
         ttk.Button(addbar, text="Add task", command=lambda: self.open_add_dialog(default_deadline=date.today().isoformat())).grid(row=0, column=1)
@@ -1706,6 +1814,7 @@ class PiModoro(tk.Tk):
         )
         editor.insert(0, original)
         editor.select_range(0, "end")
+        bind_entry_editor_shortcuts(editor)
         editor.grid(row=0, column=1, sticky="w", padx=3, pady=6)
         editor.focus_set()
         self.inline_editor = editor
@@ -1949,6 +2058,7 @@ class PiModoro(tk.Tk):
         self.details_title_var = tk.StringVar()
         self.details_title_entry = ttk.Entry(title_frame, textvariable=self.details_title_var)
         self.details_title_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        bind_entry_editor_shortcuts(self.details_title_entry)
         ttk.Button(title_frame, text="Advanced edit", command=self.edit_selected_task).grid(row=0, column=1)
 
         durations = ttk.Frame(page, padding=(20, 0, 20, 8))
@@ -2947,139 +3057,309 @@ class PiModoro(tk.Tk):
 
     # ---------- Graveyards ----------
 
-    def _graveyard_handwriting_font(self) -> str:
-        available = set(tkfont.families(self))
-        for family in (
-            "URW Chancery L",
+    def _available_graveyard_fonts(self) -> list[str]:
+        """Return fonts Tk can actually use, with handwriting-like choices first."""
+        available = sorted({str(family).strip() for family in tkfont.families(self) if str(family).strip()})
+        preferred = (
+            "Architects Daughter",
+            "Kalam",
+            "Comic Neue",
             "Segoe Print",
             "Bradley Hand",
-            "Comic Sans MS",
             "Purisa",
             "Chilanka",
-        ):
-            if family in available:
-                return family
-        return "TkDefaultFont"
+            "Comic Sans MS",
+            "URW Chancery L",
+        )
+        ordered = [family for family in preferred if family in available]
+        handwriting_words = ("hand", "script", "comic", "chancery", "cursive", "print", "purisa", "chilanka")
+        ordered.extend(
+            family for family in available
+            if family not in ordered and any(word in family.lower() for word in handwriting_words)
+        )
+        ordered.extend(family for family in available if family not in ordered)
+        return ordered
+
+    def _graveyard_handwriting_font(self) -> str:
+        """Use the saved Graveyard font, otherwise pick the best installed handwriting-like font."""
+        choices = self._available_graveyard_fonts()
+        saved = str(self.db.get_setting("graveyard_font", "") or "").strip()
+        if saved in choices:
+            return saved
+        return choices[0] if choices else "TkDefaultFont"
+
+    def _apply_graveyard_font(self, *, persist: bool = False) -> None:
+        """Apply the Settings font choice to the Graveyard, optionally saving it."""
+        if not hasattr(self, "graveyard_font_var"):
+            return
+        family = self.graveyard_font_var.get().strip()
+        available = set(tkfont.families(self))
+        if family not in available:
+            return
+        self.graveyard_font_family = family
+        if persist:
+            self.db.set_setting("graveyard_font", family)
+        if hasattr(self, "graveyard_text") and self.graveyard_text.winfo_exists():
+            self.graveyard_text.configure(font=(family, 13))
+            if hasattr(self, "_redraw_graveyard_rules"):
+                self.after_idle(self._redraw_graveyard_rules)
+
+    def _preview_graveyard_font(self, _event: tk.Event | None = None) -> None:
+        self._apply_graveyard_font(persist=False)
 
     def _build_graveyards_page(self, page: ttk.Frame) -> None:
+        """Build Graveyards as one real multiline notepad instead of per-line Entry widgets."""
         page.columnconfigure(0, weight=1)
         page.rowconfigure(0, weight=1)
 
         paper = self.theme["note_paper"]
         ink = self.theme["graveyard_text"]
+        self.graveyard_font_family = self._graveyard_handwriting_font()
+        self.graveyard_save_job: str | None = None
 
         notebook = tk.Frame(page, background=paper, borderwidth=0, highlightthickness=0)
         notebook.grid(row=0, column=0, sticky="nsew", padx=18, pady=18)
         notebook.columnconfigure(0, weight=1)
-        notebook.rowconfigure(1, weight=1)
+        notebook.rowconfigure(2, weight=1)
 
+        heading = tk.Frame(notebook, background=paper, borderwidth=0, highlightthickness=0)
+        heading.grid(row=0, column=0, sticky="ew")
+        heading.columnconfigure(0, weight=1)
         tk.Label(
-            notebook,
+            heading,
             text="Graveyard of untimed tasks and ideas to do in the never-coming future.",
             background=paper,
             foreground="#a3a3a3",
             font=("TkDefaultFont", 9, "italic"),
             anchor="w",
             justify="left",
-            padx=64,
+            padx=18,
             pady=10,
         ).grid(row=0, column=0, sticky="ew")
-
-        body = tk.Frame(notebook, background=paper, borderwidth=0, highlightthickness=0)
-        body.grid(row=1, column=0, sticky="nsew")
-        body.columnconfigure(0, weight=1)
-        body.rowconfigure(0, weight=1)
-
-        self.graveyard_canvas = tk.Canvas(
-            body,
+        self.graveyard_status = tk.Label(
+            heading,
+            text="Autosaved",
             background=paper,
-            borderwidth=0,
-            highlightthickness=0,
+            foreground="#a3a3a3",
+            font=("TkDefaultFont", 8),
+            anchor="e",
+            padx=18,
         )
-        graveyard_scroll = ttk.Scrollbar(body, orient="vertical", command=self.graveyard_canvas.yview)
-        self.graveyard_canvas.configure(yscrollcommand=graveyard_scroll.set)
-        self.graveyard_canvas.grid(row=0, column=0, sticky="nsew")
-        graveyard_scroll.grid(row=0, column=1, sticky="ns")
+        self.graveyard_status.grid(row=0, column=1, sticky="e")
 
-        self.graveyard_lines_frame = tk.Frame(
-            self.graveyard_canvas,
-            background=paper,
-            borderwidth=0,
-            highlightthickness=0,
-        )
-        self.graveyard_window = self.graveyard_canvas.create_window(
-            (0, 0), window=self.graveyard_lines_frame, anchor="nw"
-        )
-        self.graveyard_lines_frame.bind(
-            "<Configure>",
-            lambda _event: self.graveyard_canvas.configure(
-                scrollregion=self.graveyard_canvas.bbox("all")
-            ),
-        )
-        self.graveyard_canvas.bind(
-            "<Configure>",
-            lambda event: self.graveyard_canvas.itemconfigure(
-                self.graveyard_window, width=event.width
-            ),
-        )
+        toolbar = tk.Frame(notebook, background=paper, borderwidth=0, highlightthickness=0, padx=14, pady=4)
+        toolbar.grid(row=1, column=0, sticky="ew")
+        for label, command in (
+            ("Undo", self._graveyard_undo),
+            ("Redo", self._graveyard_redo),
+            ("Cut", lambda: self._graveyard_virtual_event("<<Cut>>")),
+            ("Copy", lambda: self._graveyard_virtual_event("<<Copy>>")),
+            ("Paste", lambda: self._graveyard_virtual_event("<<Paste>>")),
+            ("Select all", self._graveyard_select_all),
+            ("Save", self.save_graveyard_notes),
+        ):
+            tk.Button(
+                toolbar,
+                text=label,
+                command=command,
+                background=paper,
+                foreground=ink,
+                activebackground=paper,
+                activeforeground=ink,
+                relief="flat",
+                borderwidth=0,
+                highlightthickness=0,
+                padx=7,
+                pady=3,
+                cursor="hand2",
+            ).pack(side="left", padx=(0, 2))
 
-        self.graveyard_entries: list[tk.Entry] = []
-        self.graveyard_save_job: str | None = None
-        self.graveyard_font_family = self._graveyard_handwriting_font()
+        editor_shell = tk.Frame(notebook, background=paper, borderwidth=0, highlightthickness=0)
+        editor_shell.grid(row=2, column=0, sticky="nsew")
+        editor_shell.columnconfigure(0, weight=1)
+        editor_shell.rowconfigure(0, weight=1)
 
-        saved = str(self.db.get_setting("graveyard_notes", "") or "")
-        saved_lines = saved.split("\n") if saved else []
-        for value in saved_lines:
-            self._append_graveyard_line(value)
-        while len(self.graveyard_entries) < max(36, len(saved_lines) + 12):
-            self._append_graveyard_line("")
-
-
-    def _append_graveyard_line(self, value: str = "") -> tk.Entry:
-        paper = self.theme["note_paper"]
-        ink = self.theme["graveyard_text"]
-        index = len(self.graveyard_entries)
-
-        line = tk.Frame(
-            self.graveyard_lines_frame,
-            background=paper,
-            borderwidth=0,
-            highlightthickness=0,
-        )
-        line.pack(fill="x")
-        line.columnconfigure(2, weight=1)
-
-        tk.Frame(line, background=paper, width=52, height=30).grid(row=0, column=0, sticky="ns")
-        tk.Frame(line, background="#cf6868", width=2).grid(row=0, column=1, sticky="ns")
-
-        writing = tk.Frame(line, background=paper, borderwidth=0, highlightthickness=0)
-        writing.grid(row=0, column=2, sticky="ew")
-        writing.columnconfigure(0, weight=1)
-
-        entry = tk.Entry(
-            writing,
+        self.graveyard_text = tk.Text(
+            editor_shell,
+            wrap="word",
+            undo=True,
+            autoseparators=True,
+            maxundo=-1,
             background=paper,
             foreground=ink,
             insertbackground=ink,
+            selectbackground=self.theme["accent"],
+            selectforeground=self.theme["text"],
             relief="flat",
             borderwidth=0,
             highlightthickness=0,
             font=(self.graveyard_font_family, 13),
+            padx=54,
+            pady=18,
+            spacing1=4,
+            spacing3=6,
+            tabs=("32p",),
         )
-        entry.grid(row=0, column=0, sticky="ew", padx=(10, 18), pady=(3, 1))
-        entry.insert(0, value)
+        graveyard_scroll = ttk.Scrollbar(editor_shell, orient="vertical", command=self.graveyard_text.yview)
+        self.graveyard_text.configure(yscrollcommand=graveyard_scroll.set)
+        self.graveyard_text.grid(row=0, column=0, sticky="nsew")
+        graveyard_scroll.grid(row=0, column=1, sticky="ns")
 
-        tk.Frame(writing, background="#9bb7d2", height=1).grid(row=1, column=0, sticky="ew")
+        # Notebook-paper ruling.  These are visual overlays only; the Graveyard
+        # remains one continuous tk.Text editor with normal selection/editing.
+        self.graveyard_rule_widgets: list[tk.Frame] = []
+        self.graveyard_margin_rule = tk.Frame(
+            self.graveyard_text,
+            background="#cf6868",
+            borderwidth=0,
+            highlightthickness=0,
+            cursor="xterm",
+        )
+        self.graveyard_margin_rule.place(x=52, y=0, width=2, relheight=1.0)
+        self._bind_graveyard_rule_pointer(self.graveyard_margin_rule)
+        self.graveyard_text.bind("<Configure>", self._graveyard_text_configure, add="+")
+        self.after_idle(self._redraw_graveyard_rules)
 
-        entry.bind("<KeyRelease>", self._schedule_graveyard_save)
-        entry.bind("<FocusOut>", lambda _event: self.save_graveyard_notes())
-        entry.bind("<Return>", lambda event, item=index: self._graveyard_next_line(event, item))
-        entry.bind("<Up>", lambda event, item=index: self._graveyard_move_line(event, item, -1))
-        entry.bind("<Down>", lambda event, item=index: self._graveyard_move_line(event, item, 1))
-        entry.bind("<<Paste>>", lambda event, item=index: self._graveyard_paste(event, item))
+        saved = str(self.db.get_setting("graveyard_notes", "") or "")
+        if saved:
+            self.graveyard_text.insert("1.0", saved)
+        self.graveyard_text.edit_modified(False)
 
-        self.graveyard_entries.append(entry)
-        return entry
+        # Keep normal Text class behavior for Enter, Shift+arrows, mouse selection,
+        # Ctrl+arrows, Delete/Backspace, cut/copy/paste and undo/redo.
+        self.graveyard_text.bind("<<Modified>>", self._graveyard_modified)
+        self.graveyard_text.bind("<Control-a>", self._graveyard_select_all_event)
+        self.graveyard_text.bind("<Control-s>", self._graveyard_save_event)
+        self.graveyard_text.bind("<MouseWheel>", self._on_graveyard_mousewheel)
+        self.graveyard_text.bind("<Button-4>", self._on_graveyard_mousewheel)
+        self.graveyard_text.bind("<Button-5>", self._on_graveyard_mousewheel)
+
+    def _bind_graveyard_rule_pointer(self, widget: tk.Widget) -> None:
+        """Keep the decorative notebook lines from blocking normal text editing."""
+        widget.bind(
+            "<Button-1>",
+            lambda event: self._forward_graveyard_pointer(event, "<Button-1>"),
+        )
+        widget.bind(
+            "<B1-Motion>",
+            lambda event: self._forward_graveyard_pointer(event, "<B1-Motion>"),
+        )
+        widget.bind(
+            "<ButtonRelease-1>",
+            lambda event: self._forward_graveyard_pointer(event, "<ButtonRelease-1>"),
+        )
+
+    def _forward_graveyard_pointer(self, event: tk.Event, sequence: str) -> str:
+        if not hasattr(self, "graveyard_text"):
+            return "break"
+        try:
+            x = int(event.x_root - self.graveyard_text.winfo_rootx())
+            y = int(event.y_root - self.graveyard_text.winfo_rooty())
+            self.graveyard_text.focus_set()
+            self.graveyard_text.event_generate(
+                sequence,
+                x=x,
+                y=y,
+                state=int(getattr(event, "state", 0) or 0),
+            )
+        except tk.TclError:
+            pass
+        return "break"
+
+    def _graveyard_text_configure(self, _event: tk.Event | None = None) -> None:
+        self.after_idle(self._redraw_graveyard_rules)
+
+    def _redraw_graveyard_rules(self) -> None:
+        """Draw blue horizontal notebook rules across the visible editor area."""
+        if not hasattr(self, "graveyard_text") or not self.graveyard_text.winfo_exists():
+            return
+        for rule in getattr(self, "graveyard_rule_widgets", []):
+            try:
+                rule.destroy()
+            except tk.TclError:
+                pass
+        self.graveyard_rule_widgets = []
+
+        try:
+            width = self.graveyard_text.winfo_width()
+            height = self.graveyard_text.winfo_height()
+            font = tkfont.Font(font=self.graveyard_text.cget("font"))
+            line_step = max(24, int(font.metrics("linespace")) + 10)
+        except tk.TclError:
+            return
+
+        # First rule sits below the first writing line; subsequent rules repeat
+        # at the Text widget's line spacing.  Start just right of the red margin.
+        first_y = 18 + line_step
+        rule_width = max(1, width - 54)
+        y = first_y
+        while y < height:
+            rule = tk.Frame(
+                self.graveyard_text,
+                background="#9bb7d2",
+                borderwidth=0,
+                highlightthickness=0,
+                cursor="xterm",
+            )
+            rule.place(x=54, y=y, width=rule_width, height=1)
+            self._bind_graveyard_rule_pointer(rule)
+            self.graveyard_rule_widgets.append(rule)
+            y += line_step
+
+        # Keep the red margin above horizontal rules where they intersect.
+        if hasattr(self, "graveyard_margin_rule"):
+            self.graveyard_margin_rule.lift()
+
+    def _graveyard_virtual_event(self, event_name: str) -> None:
+        if not hasattr(self, "graveyard_text"):
+            return
+        self.graveyard_text.focus_set()
+        self.graveyard_text.event_generate(event_name)
+
+    def _graveyard_undo(self) -> None:
+        if not hasattr(self, "graveyard_text"):
+            return
+        self.graveyard_text.focus_set()
+        try:
+            self.graveyard_text.edit_undo()
+        except tk.TclError:
+            pass
+
+    def _graveyard_redo(self) -> None:
+        if not hasattr(self, "graveyard_text"):
+            return
+        self.graveyard_text.focus_set()
+        try:
+            self.graveyard_text.edit_redo()
+        except tk.TclError:
+            pass
+
+    def _graveyard_select_all(self) -> None:
+        if not hasattr(self, "graveyard_text"):
+            return
+        self.graveyard_text.focus_set()
+        self.graveyard_text.tag_add(tk.SEL, "1.0", "end-1c")
+        self.graveyard_text.mark_set(tk.INSERT, "end-1c")
+        self.graveyard_text.see(tk.INSERT)
+
+    def _graveyard_select_all_event(self, _event: tk.Event) -> str:
+        self._graveyard_select_all()
+        return "break"
+
+    def _graveyard_save_event(self, _event: tk.Event) -> str:
+        self.save_graveyard_notes()
+        return "break"
+
+    def _graveyard_modified(self, _event: tk.Event | None = None) -> None:
+        if not hasattr(self, "graveyard_text"):
+            return
+        if not self.graveyard_text.edit_modified():
+            return
+        # Reset the flag immediately so every subsequent edit produces a new event.
+        self.graveyard_text.edit_modified(False)
+        if hasattr(self, "graveyard_status"):
+            self.graveyard_status.configure(text="Unsaved…")
+        self._schedule_graveyard_save()
 
     def _schedule_graveyard_save(self, _event: tk.Event | None = None) -> None:
         if getattr(self, "graveyard_save_job", None):
@@ -3090,72 +3370,33 @@ class PiModoro(tk.Tk):
         self.graveyard_save_job = self.after(350, self.save_graveyard_notes)
 
     def save_graveyard_notes(self) -> None:
-        if not hasattr(self, "graveyard_entries"):
+        if not hasattr(self, "graveyard_text"):
             return
+        if getattr(self, "graveyard_save_job", None):
+            try:
+                self.after_cancel(self.graveyard_save_job)
+            except tk.TclError:
+                pass
         self.graveyard_save_job = None
-        lines = [entry.get().rstrip() for entry in self.graveyard_entries]
-        while lines and not lines[-1]:
-            lines.pop()
-        self.db.set_setting("graveyard_notes", "\n".join(lines))
-
-    def _graveyard_next_line(self, _event: tk.Event, index: int) -> str:
-        if index + 1 >= len(self.graveyard_entries):
-            self._append_graveyard_line("")
-        target = self.graveyard_entries[index + 1]
-        target.focus_set()
-        target.icursor(tk.END)
-        self._schedule_graveyard_save()
-        return "break"
-
-    def _graveyard_move_line(self, _event: tk.Event, index: int, direction: int) -> str | None:
-        target_index = index + direction
-        if not 0 <= target_index < len(self.graveyard_entries):
-            return None
-        source = self.graveyard_entries[index]
-        target = self.graveyard_entries[target_index]
-        column = source.index(tk.INSERT)
-        target.focus_set()
-        target.icursor(min(column, len(target.get())))
-        return "break"
-
-    def _graveyard_paste(self, _event: tk.Event, index: int) -> str | None:
         try:
-            text = self.clipboard_get()
+            notes = self.graveyard_text.get("1.0", "end-1c")
         except tk.TclError:
-            return None
-        if "\n" not in text and "\r" not in text:
-            return None
-
-        chunks = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-        entry = self.graveyard_entries[index]
-        before = entry.get()[: entry.index(tk.INSERT)]
-        after = entry.get()[entry.index(tk.INSERT) :]
-        chunks[0] = before + chunks[0]
-        chunks[-1] = chunks[-1] + after
-
-        needed = index + len(chunks) - len(self.graveyard_entries)
-        for _ in range(max(0, needed)):
-            self._append_graveyard_line("")
-        for offset, chunk in enumerate(chunks):
-            target = self.graveyard_entries[index + offset]
-            target.delete(0, tk.END)
-            target.insert(0, chunk)
-        target.focus_set()
-        target.icursor(tk.END)
-        self._schedule_graveyard_save()
-        return "break"
+            return
+        self.db.set_setting("graveyard_notes", notes)
+        if hasattr(self, "graveyard_status"):
+            self.graveyard_status.configure(text="Autosaved")
 
     def _pointer_over_graveyard(self) -> bool:
-        if self.current_page != "graveyards" or not hasattr(self, "graveyard_canvas"):
+        if self.current_page != "graveyards" or not hasattr(self, "graveyard_text"):
             return False
         try:
             x = self.winfo_pointerx()
             y = self.winfo_pointery()
-            left = self.graveyard_canvas.winfo_rootx()
-            top = self.graveyard_canvas.winfo_rooty()
+            left = self.graveyard_text.winfo_rootx()
+            top = self.graveyard_text.winfo_rooty()
             return (
-                left <= x < left + self.graveyard_canvas.winfo_width()
-                and top <= y < top + self.graveyard_canvas.winfo_height()
+                left <= x < left + self.graveyard_text.winfo_width()
+                and top <= y < top + self.graveyard_text.winfo_height()
             )
         except tk.TclError:
             return False
@@ -3174,7 +3415,7 @@ class PiModoro(tk.Tk):
                 return None
             magnitude = max(1, abs(delta) // 120)
             steps = -magnitude if delta > 0 else magnitude
-        self.graveyard_canvas.yview_scroll(steps, "units")
+        self.graveyard_text.yview_scroll(steps, "units")
         return "break"
 
     # ---------- Settings and CSV ----------
@@ -3197,7 +3438,25 @@ class PiModoro(tk.Tk):
         ttk.Spinbox(general, from_=1, to=720, textvariable=self.default_break_minutes, width=8).grid(row=0, column=3, padx=(8, 20), pady=6)
         ttk.Checkbutton(general, text="Auto-start next timer mode", variable=self.auto_start).grid(row=1, column=0, columnspan=2, sticky="w", pady=8)
         ttk.Checkbutton(general, text="Lock Linux screen after completed work timer", variable=self.lock_enabled).grid(row=2, column=0, columnspan=4, sticky="w", pady=8)
-        ttk.Button(general, text="Save settings", command=self.save_settings).grid(row=3, column=0, sticky="w", pady=(12, 0))
+
+        ttk.Label(general, text="Graveyard font").grid(row=3, column=0, sticky="w", pady=(10, 6))
+        self.graveyard_font_choices = self._available_graveyard_fonts()
+        self.graveyard_font_var = tk.StringVar(value=self._graveyard_handwriting_font())
+        self.graveyard_font_combo = ttk.Combobox(
+            general,
+            textvariable=self.graveyard_font_var,
+            values=self.graveyard_font_choices,
+            state="readonly",
+            width=32,
+        )
+        self.graveyard_font_combo.grid(row=3, column=1, columnspan=3, sticky="w", padx=(8, 0), pady=(10, 6))
+        self.graveyard_font_combo.bind("<<ComboboxSelected>>", self._preview_graveyard_font)
+        ttk.Label(
+            general,
+            text="Only fonts installed on this computer are listed. Selecting one previews it immediately.",
+            style="Muted.TLabel",
+        ).grid(row=4, column=0, columnspan=4, sticky="w", pady=(0, 6))
+        ttk.Button(general, text="Save settings", command=self.save_settings).grid(row=5, column=0, sticky="w", pady=(12, 0))
 
         color_keys = [
             ("background", "Background"),
@@ -3261,6 +3520,7 @@ class PiModoro(tk.Tk):
         self.db.set_setting("rest_minutes", break_minutes)
         self.db.set_setting("auto_start", bool(self.auto_start.get()))
         self.db.set_setting("lock_enabled", bool(self.lock_enabled.get()))
+        self._apply_graveyard_font(persist=True)
         if self.timer_task_id is None and not self.timer_running:
             self.timer_remaining = self._task_duration_seconds(None, self.timer_mode)
         self._save_timer_state()
@@ -3284,8 +3544,9 @@ class PiModoro(tk.Tk):
         self.db.set_setting("theme", self.theme)
         self._rebuild_ui_for_theme()
 
-    def _rebuild_ui_for_theme(self) -> None:
-        self.save_graveyard_notes()
+    def _rebuild_ui_for_theme(self, *, save_graveyard: bool = True) -> None:
+        if save_graveyard:
+            self.save_graveyard_notes()
         self._apply_theme()
         for child in self.winfo_children():
             child.destroy()
