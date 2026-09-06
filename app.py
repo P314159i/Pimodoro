@@ -19,6 +19,12 @@ from pimodoro_db import Database, now_iso
 APP_NAME = "PiModoro"
 DB_FILE = Path.home() / ".pimodoro.db"
 
+GRAVEYARD_FONT_CHOICES = ("Domestic Manners",)
+GRAVEYARD_MARGIN_X = 36
+GRAVEYARD_MARGIN_WIDTH = 2
+GRAVEYARD_TEXT_GAP = 8
+GRAVEYARD_TEXT_LEFT = GRAVEYARD_MARGIN_X + GRAVEYARD_MARGIN_WIDTH + GRAVEYARD_TEXT_GAP
+
 DEFAULT_THEME = {
     "background": "#023d2a",
     "panel": "#045c3d",
@@ -3058,81 +3064,15 @@ class PiModoro(tk.Tk):
     # ---------- Graveyards ----------
 
     def _available_graveyard_fonts(self) -> list[str]:
-        """Return a short, intentional list of installed Graveyard fonts."""
-        available = {
-            str(family).strip()
-            for family in tkfont.families(self)
-            if str(family).strip()
-        }
-
-        # Keep this deliberately short. The screenshot reference uses neat,
-        # hand-printed lettering (Domestic Manners), not cursive/calligraphy.
-        casual_candidates = (
-            "Dustismo",
-            "Balker",
-            "Ubuntu",
-            "Noto Sans",
-            "DejaVu Sans",
-            "Liberation Sans",
-        )
-        formal_candidates = (
-            "Liberation Serif",
-            "DejaVu Serif",
-            "Noto Serif",
-            "Times New Roman",
-        )
-        handwritten_candidates = (
-            "Domestic Manners",
-            "Architects Daughter",
-            "Patrick Hand",
-            "Coming Soon",
-            "Handlee",
-            "Comic Neue",
-            "Segoe Print",
-            "Chilanka",
-            "Bradley Hand",
-        )
-
-        # Always expose Domestic Manners in the GUI instead of filtering it out.
-        choices: list[str] = ["Domestic Manners"]
-
-        def add_first(candidates: tuple[str, ...], amount: int) -> None:
-            added = 0
-            for family in candidates:
-                if family in available and family not in choices:
-                    choices.append(family)
-                    added += 1
-                    if added >= amount:
-                        return
-
-        # Keep the rest of the list short.
-        add_first(casual_candidates, 2)
-        add_first(formal_candidates, 2)
-        add_first(tuple(f for f in handwritten_candidates if f != "Domestic Manners"), 1)
-
-        return choices
+        """Return the single font choice reserved for the Graveyard."""
+        return list(GRAVEYARD_FONT_CHOICES)
 
     def _graveyard_handwriting_font(self) -> str:
-        """Restore the saved choice; otherwise prefer the neat handwritten face."""
+        """Restore the Graveyard choice, falling back to its sole font."""
         choices = self._available_graveyard_fonts()
         saved = str(self.db.get_setting("graveyard_font", "") or "").strip()
         if saved in choices:
             return saved
-
-        for family in (
-            "Domestic Manners",
-            "Architects Daughter",
-            "Patrick Hand",
-            "Coming Soon",
-            "Handlee",
-            "Comic Neue",
-            "Segoe Print",
-            "Chilanka",
-            "Bradley Hand",
-        ):
-            if family in choices:
-                return family
-
         return choices[0]
 
     def _apply_graveyard_font(self, *, persist: bool = False) -> None:
@@ -3242,7 +3182,7 @@ class PiModoro(tk.Tk):
             borderwidth=0,
             highlightthickness=0,
             font=(self.graveyard_font_family, 16),
-            padx=54,
+            padx=GRAVEYARD_TEXT_LEFT,
             pady=18,
             spacing1=2,
             spacing2=4,
@@ -3270,7 +3210,12 @@ class PiModoro(tk.Tk):
             cursor="xterm",
         )
         # Red notebook margin: fixed near the left edge while the text scrolls.
-        self.graveyard_margin_rule.place(x=36, y=0, width=2, relheight=1.0)
+        self.graveyard_margin_rule.place(
+            x=GRAVEYARD_MARGIN_X,
+            y=0,
+            width=GRAVEYARD_MARGIN_WIDTH,
+            relheight=1.0,
+        )
         self._bind_graveyard_rule_pointer(self.graveyard_margin_rule)
         self.graveyard_text.bind("<Configure>", self._graveyard_text_configure, add="+")
         self._schedule_graveyard_rule_redraw()
@@ -3371,12 +3316,10 @@ class PiModoro(tk.Tk):
             width = max(1, text_widget.winfo_width())
             height = max(1, text_widget.winfo_height())
             font = tkfont.Font(font=text_widget.cget("font"))
-            descent = max(1, int(font.metrics("descent")))
             fallback_pitch = max(
                 28,
                 int(font.metrics("linespace"))
                 + int(text_widget.cget("spacing1"))
-                + int(text_widget.cget("spacing2"))
                 + int(text_widget.cget("spacing3")),
             )
         except (tk.TclError, TypeError, ValueError):
@@ -3387,11 +3330,11 @@ class PiModoro(tk.Tk):
         probe_y = 0
 
         # dlineinfo() reports the real on-screen row and baseline after wrapping,
-        # scrolling and font changes.  Put the blue rule below the glyph descent,
-        # inside the intentional lower spacing of each row.
+        # scrolling and font changes. Put each blue rule on the text baseline so
+        # the writing sits directly on it like writing on ruled notebook paper.
         while probe_y < height:
             try:
-                index = text_widget.index(f"@60,{probe_y}")
+                index = text_widget.index(f"@{GRAVEYARD_TEXT_LEFT},{probe_y}")
                 info = text_widget.dlineinfo(index)
             except tk.TclError:
                 info = None
@@ -3407,10 +3350,7 @@ class PiModoro(tk.Tk):
 
             if row_y not in seen_rows:
                 seen_rows.add(row_y)
-                # Six pixels below the font's descent gives the handwritten
-                # notebook effect: letters sit above the rule instead of being
-                # crossed by it.
-                rule_y = row_y + baseline + descent + 6
+                rule_y = row_y + baseline
                 if 0 <= rule_y < height:
                     positions.append(rule_y)
 
@@ -3625,7 +3565,7 @@ class PiModoro(tk.Tk):
 
         ttk.Label(
             general,
-            text="Short list only: casual, formal, and a Domestic Manners-style handwritten font when installed.",
+            text="Font selection is available only for Graveyard; one handwriting option is currently provided.",
             style="Muted.TLabel",
         ).grid(row=4, column=0, columnspan=4, sticky="w", pady=(0, 6))
         ttk.Button(general, text="Save settings", command=self.save_settings).grid(row=5, column=0, sticky="w", pady=(12, 0))
