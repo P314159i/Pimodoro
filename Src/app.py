@@ -6,3809 +6,499 @@ import json
 import math
 import shutil
 import subprocess
-import tkinter as tk
-import tkinter.font as tkfont
+import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from tkinter import colorchooser, filedialog, messagebox, ttk
-from typing import Any, Iterable, Mapping
+from typing import Any, Mapping
+
+from PySide6.QtCore import QDate, QMimeData, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QDrag, QFont, QFontDatabase, QIcon
+from PySide6.QtWidgets import (
+    QApplication, QCalendarWidget, QCheckBox, QColorDialog, QComboBox, QDialog,
+    QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
+    QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
+    QPushButton, QScrollArea, QSpinBox, QStackedWidget, QTableWidget,
+    QTableWidgetItem, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
+)
 
 from pimodoro_db import Database
 
 APP_NAME = "PiModoro"
 DB_FILE = Path.home() / ".pimodoro.db"
-
-MIGHTY_FONT_FILE = Path(__file__).resolve().parent.parent / "misc" / "Mighty-X34Z2.ttf"
-HEAD_FONT_FILE = Path(__file__).resolve().parent.parent / "misc" / "Head.ttf"
-FLIGHTY_FONT_FILE = Path(__file__).resolve().parent.parent / "misc" / "Flighty.ttf"
-
-GRAVEYARD_FONT_CHOICES = (
-    "Mighty",
-    "Head",
-    "Flighty",
-    "TkDefaultFont",
-    "TkFixedFont",
-    "Helvetica",
-    "Times",
-    "Courier",
-)
-
-GRAVEYARD_FONT_SIZE = 12
-MIGHTY_FONT_SIZE = 30
-HEAD_FONT_SIZE = 30
-FLIGHTY_FONT_SIZE = 30
-GRAVEYARD_FONT_PREVIEW_SIZE = 14
-GRAVEYARD_LINE_GAP = 10
-GRAVEYARD_RULE_BASELINE_OFFSET = 1
-GRAVEYARD_MARGIN_X = 36
-GRAVEYARD_MARGIN_WIDTH = 2
-GRAVEYARD_TEXT_GAP = 8
-GRAVEYARD_TEXT_LEFT = GRAVEYARD_MARGIN_X + GRAVEYARD_MARGIN_WIDTH + GRAVEYARD_TEXT_GAP
+MISC_DIR = Path(__file__).resolve().parent.parent / "misc"
+EMOJI_FONT_FILE = MISC_DIR / "NotoColorEmoji-Regular.ttf"
 
 DEFAULT_THEME = {
-    "background": "#023d2a",
-    "panel": "#045c3d",
-    "accent": "#05774a",
-    "hover": "#07935c",
-    "text": "#e8fff5",
-    "muted": "#b1d8c7",
-    "field": "#032f22",
-    "note_paper": "#fffdf5",
-    "note_text": "#1f2937",
-    "graveyard_text": "#31445a",
-    "P1": "#e5484d",
-    "P2": "#f59e0b",
-    "P3": "#3b82f6",
-    "P4": "#94a3b8",
+    "background": "#023d2a", "panel": "#045c3d", "accent": "#05774a",
+    "hover": "#07935c", "text": "#e8fff5", "muted": "#b1d8c7",
+    "field": "#032f22", "note_paper": "#fffdf5", "note_text": "#1f2937",
+    "P1": "#e5484d", "P2": "#f59e0b", "P3": "#3b82f6", "P4": "#94a3b8",
     "opacity": 0.94,
 }
-
-PRIORITY_LABELS = {
-    "P1": "P1 Critical",
-    "P2": "P2 High",
-    "P3": "P3 Medium",
-    "P4": "P4 Low",
-}
-
-TRACKING_LABELS = {
-    "manual": "Manual time",
-    "pomodoro": "Pomodoro progress",
-    "both": "Both",
-}
+PRIORITIES = {"P1": "P1 Critical", "P2": "P2 High", "P3": "P3 Medium", "P4": "P4 Low"}
+TRACKING = {"manual": "Manual time", "pomodoro": "Pomodoro progress", "both": "Both"}
 
 
-def contrast_text(hex_color: str) -> str:
-    clean = str(hex_color).lstrip("#")
-    if len(clean) != 6:
-        return "#ffffff"
-    try:
-        red, green, blue = (int(clean[index : index + 2], 16) for index in (0, 2, 4))
-    except ValueError:
-        return "#ffffff"
-    luminance = 0.299 * red + 0.587 * green + 0.114 * blue
-    return "#111111" if luminance > 165 else "#ffffff"
+def format_duration(seconds: int, include_seconds: bool = False) -> str:
+    seconds = max(0, int(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}" if include_seconds else f"{hours}h {minutes:02d}m"
 
 
-def format_duration(total_seconds: int, include_seconds: bool = False) -> str:
-    total_seconds = max(0, int(total_seconds))
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    if include_seconds:
-        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-    return f"{hours}h {minutes:02d}m"
-
-
-def parse_date(value: str, *, blank_ok: bool = True) -> str | None:
-    clean = value.strip()
-    if not clean and blank_ok:
+def parse_date(text: str) -> str | None:
+    text = text.strip()
+    if not text:
         return None
-    try:
-        return date.fromisoformat(clean).isoformat()
-    except ValueError as exc:
-        raise ValueError(f"Invalid date: {clean}. Use YYYY-MM-DD.") from exc
+    return date.fromisoformat(text).isoformat()
 
 
-def parse_exceptions(value: str) -> list[tuple[str, str]]:
-    ranges: list[tuple[str, str]] = []
-    for raw in value.replace("\n", ",").split(","):
-        item = raw.strip()
-        if not item:
-            continue
-        if ".." in item:
-            start_text, end_text = (part.strip() for part in item.split("..", 1))
-        else:
-            start_text = end_text = item
-        start = parse_date(start_text, blank_ok=False)
-        end = parse_date(end_text, blank_ok=False)
-        assert start is not None and end is not None
-        if end < start:
-            start, end = end, start
-        ranges.append((start, end))
-    return ranges
+def confirm(parent: QWidget, title: str, text: str) -> bool:
+    return QMessageBox.question(parent, title, text) == QMessageBox.StandardButton.Yes
 
 
-def lock_screen() -> tuple[bool, str]:
-    commands = [
-        ["cinnamon-screensaver-command", "--lock"],
-        ["cinnamon-screensaver-command", "-l"],
-        ["xdg-screensaver", "lock"],
-        ["loginctl", "lock-session"],
-        ["dm-tool", "lock"],
-        ["gnome-screensaver-command", "-l"],
-    ]
-    tried: list[str] = []
-    for command in commands:
-        if not shutil.which(command[0]):
-            continue
-        tried.append(" ".join(command))
-        try:
-            result = subprocess.run(
-                command,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError):
-            continue
-        if result.returncode == 0:
-            return True, " ".join(command)
-    if tried:
-        return False, "Tried: " + ", ".join(tried)
-    return False, "No supported Linux screen-lock command was found."
+def clear_layout(layout) -> None:
+    while layout.count():
+        item = layout.takeAt(0)
+        widget = item.widget()
+        child = item.layout()
+        if widget:
+            widget.deleteLater()
+        elif child:
+            clear_layout(child)
 
 
-def _entry_select_all(event: tk.Event) -> str:
-    """Select all text in a single-line Entry and keep the cursor at the end."""
-    widget = event.widget
-    try:
-        widget.selection_range(0, tk.END)
-        widget.icursor(tk.END)
-    except tk.TclError:
-        pass
-    return "break"
+def register_fonts() -> None:
+    for filename in ("Mighty-X34Z2.ttf", "Head.ttf", "Flighty.ttf", "NotoColorEmoji-Regular.ttf"):
+        path = MISC_DIR / filename
+        if path.exists():
+            font_id = QFontDatabase.addApplicationFont(str(path))
+            if filename == "NotoColorEmoji-Regular.ttf" and font_id >= 0:
+                families = QFontDatabase.applicationFontFamilies(font_id)
+                if families and hasattr(QFontDatabase, "setApplicationEmojiFontFamilies"):
+                    QFontDatabase.setApplicationEmojiFontFamilies(families)
 
 
-def _entry_delete_forward(event: tk.Event) -> str:
-    """Delete the current selection, otherwise the character after the cursor."""
-    widget = event.widget
-    try:
-        if widget.selection_present():
-            widget.delete(tk.SEL_FIRST, tk.SEL_LAST)
-        else:
-            widget.delete(tk.INSERT)
-    except tk.TclError:
-        pass
-    return "break"
-
-
-def _entry_backspace(event: tk.Event) -> str:
-    """Delete the current selection, otherwise the character before the cursor."""
-    widget = event.widget
-    try:
-        if widget.selection_present():
-            widget.delete(tk.SEL_FIRST, tk.SEL_LAST)
-        else:
-            cursor = int(widget.index(tk.INSERT))
-            if cursor > 0:
-                widget.delete(cursor - 1, cursor)
-    except tk.TclError:
-        pass
-    return "break"
-
-
-def _entry_word_target(widget: tk.Widget, direction: int) -> int:
-    text = str(widget.get())
-    cursor = int(widget.index(tk.INSERT))
-    if direction < 0:
-        target = cursor
-        while target > 0 and text[target - 1].isspace():
-            target -= 1
-        while target > 0 and not text[target - 1].isspace():
-            target -= 1
-        return target
-
-    target = cursor
-    length = len(text)
-    while target < length and not text[target].isspace():
-        target += 1
-    while target < length and text[target].isspace():
-        target += 1
-    return target
-
-
-def _entry_move_word(event: tk.Event, direction: int, extend: bool = False) -> str:
-    """Implement Ctrl+Arrow and Ctrl+Shift+Arrow consistently across Tk themes."""
-    widget = event.widget
-    try:
-        cursor = int(widget.index(tk.INSERT))
-        target = _entry_word_target(widget, direction)
-
-        if extend:
-            if widget.selection_present():
-                first = int(widget.index(tk.SEL_FIRST))
-                last = int(widget.index(tk.SEL_LAST))
-                anchor = last if cursor == first else first
-            else:
-                anchor = cursor
-            widget.selection_clear()
-            widget.selection_range(min(anchor, target), max(anchor, target))
-        else:
-            widget.selection_clear()
-
-        widget.icursor(target)
-        widget.xview_moveto(1.0 if target >= len(str(widget.get())) else 0.0)
-    except tk.TclError:
-        pass
-    return "break"
-
-
-def bind_entry_editor_shortcuts(widget: tk.Widget) -> None:
-    """Give task-title entries predictable desktop text-editing shortcuts."""
-    widget.bind("<Control-a>", _entry_select_all)
-    widget.bind("<Control-Left>", lambda event: _entry_move_word(event, -1))
-    widget.bind("<Control-Right>", lambda event: _entry_move_word(event, 1))
-    widget.bind("<Control-Shift-Left>", lambda event: _entry_move_word(event, -1, True))
-    widget.bind("<Control-Shift-Right>", lambda event: _entry_move_word(event, 1, True))
-    widget.bind("<Delete>", _entry_delete_forward)
-    widget.bind("<BackSpace>", _entry_backspace)
-
-
-class TaskDialog(tk.Toplevel):
-    """Flat, scrollable task editor that matches the main application background."""
-
-    def __init__(
-        self,
-        parent: "PiModoro",
-        task: Mapping[str, Any] | None = None,
-        prefill: str = "",
-        default_deadline: str | None = None,
-        default_folder_id: int | None = None,
-    ):
+class TaskDialog(QDialog):
+    def __init__(self, parent: QWidget, db: Database, task: Mapping[str, Any] | None = None,
+                 folder_id: int | None = None, deadline: str | None = None, timeless: bool = False):
         super().__init__(parent)
-        self.parent = parent
-        self.task: dict[str, Any] = {}
-        self.result: dict[str, Any] | None = None
-        self.title("Edit task" if task else "Add task")
-        self.geometry("720x760")
-        self.minsize(620, 560)
-        self.transient(parent)
-        self.protocol("WM_DELETE_WINDOW", self.destroy)
-        self.configure(background=parent.theme["background"], borderwidth=0, highlightthickness=0)
+        self.db, self.task, self.timeless = db, dict(task or {}), timeless
+        self.setWindowTitle("Edit task" if task else "Add task")
+        self.resize(680, 720)
+        root = QVBoxLayout(self)
+        tabs = QTabWidget()
+        root.addWidget(tabs)
 
-        self.columnconfigure(0, weight=1)
-        self.rowconfigure(0, weight=1)
-
-        shell = tk.Frame(
-            self,
-            background=parent.theme["background"],
-            borderwidth=0,
-            highlightthickness=0,
-        )
-        shell.grid(row=0, column=0, sticky="nsew")
-        shell.columnconfigure(0, weight=1)
-        shell.rowconfigure(0, weight=1)
-
-        canvas = tk.Canvas(
-            shell,
-            background=parent.theme["background"],
-            borderwidth=0,
-            highlightthickness=0,
-            relief="flat",
-        )
-        scrollbar = ttk.Scrollbar(shell, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.grid(row=0, column=0, sticky="nsew")
-        scrollbar.grid(row=0, column=1, sticky="ns")
-
-        form = tk.Frame(
-            canvas,
-            background=parent.theme["background"],
-            borderwidth=0,
-            highlightthickness=0,
-            padx=22,
-            pady=18,
-        )
-        form_window = canvas.create_window((0, 0), window=form, anchor="nw")
-
-        def resize_form(event: tk.Event) -> None:
-            canvas.itemconfigure(form_window, width=event.width)
-
-        def update_scroll(_event: tk.Event | None = None) -> None:
-            canvas.configure(scrollregion=canvas.bbox("all"))
-
-        canvas.bind("<Configure>", resize_form)
-        form.bind("<Configure>", update_scroll)
-        canvas.bind("<MouseWheel>", lambda event: canvas.yview_scroll(int(-event.delta / 120), "units"))
-        form.bind("<MouseWheel>", lambda event: canvas.yview_scroll(int(-event.delta / 120), "units"))
-
-        default_work = int(parent.default_work_minutes.get())
-        default_break = int(parent.default_break_minutes.get())
-        self.title_var = tk.StringVar(value=prefill)
-        self.priority_var = tk.StringVar(value="P4")
-        self.work_var = tk.IntVar(value=default_work)
-        self.break_var = tk.IntVar(value=default_break)
-        self.tracking_var = tk.StringVar(value="both")
-        self.deadline_var = tk.StringVar(value=default_deadline or "")
-        self.folder_choices = parent.db.get_project_folders()
-        self.folder_name_to_id = {str(item["name"]): int(item["id"]) for item in self.folder_choices}
-        self.folder_id_to_name = {int(item["id"]): str(item["name"]) for item in self.folder_choices}
-        self.folder_var = tk.StringVar(value=self.folder_id_to_name.get(int(default_folder_id), "No folder") if default_folder_id else "No folder")
-        self.manual_hours_var = tk.IntVar(value=0)
-        self.manual_minutes_var = tk.IntVar(value=0)
-        self.pomo_estimate_var = tk.IntVar(value=0)
-        self.pomo_completed_var = tk.IntVar(value=0)
-        self.recurrence_enabled_var = tk.BooleanVar(value=False)
-        self.recurrence_kind_var = tk.StringVar(value="days")
-        self.recurrence_interval_var = tk.IntVar(value=1)
-        self.recurrence_start_var = tk.StringVar(value=date.today().isoformat())
-        self.recurrence_end_var = tk.StringVar(value="")
-        self.recurrence_max_var = tk.StringVar(value="")
-        self.weekday_vars = [tk.BooleanVar(value=False) for _ in range(7)]
-
-        form.columnconfigure(1, weight=1)
-        self.heading_label = tk.Label(
-            form,
-            text="Edit task" if task else "Add task",
-            background=parent.theme["background"],
-            foreground=parent.theme["text"],
-            font=("TkDefaultFont", 18, "bold"),
-            anchor="w",
-        )
-        self.heading_label.grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, 14))
-
-        ttk.Label(form, text="Task").grid(row=1, column=0, sticky="w", pady=6)
-        title_entry = ttk.Entry(form, textvariable=self.title_var)
-        title_entry.grid(row=1, column=1, columnspan=3, sticky="ew", pady=6)
-        bind_entry_editor_shortcuts(title_entry)
-        title_entry.focus_set()
-
-        ttk.Label(form, text="Priority").grid(row=2, column=0, sticky="w", pady=6)
-
-        priority_frame = tk.Frame(
-            form,
-            background=parent.theme["background"],
-            borderwidth=0,
-        )
-        priority_frame.grid(row=2, column=1, sticky="w", pady=6)
-
-        self.priority_buttons = {}
-
-        selected_icons = {
-            "P1": "🔴",
-            "P2": "🟠",
-            "P3": "🔵",
-            "P4": "⚪",
-        }
-
-        priority_icons = {
-            "P1": "🔥",
-            "P2": "🐇",
-            "P3": "🐢",
-            "P4": "☕",
-        }
-
-
-        def select_priority(p):
-            self.priority_var.set(p)
-
-            for name, button in self.priority_buttons.items():
-                if name == p:
-                    button.config(text=selected_icons[name])
-                else:
-                    button.config(text=priority_icons[name])
-
-
-        for index, priority in enumerate(("P1", "P2", "P3", "P4")):
-            button = tk.Label(
-                priority_frame,
-                text=priority_icons[priority],
-                font=("Noto Color Emoji", 16),
-                background=parent.theme["background"],
-                cursor="hand2",
-            )
-
-            button.bind(
-                "<Button-1>",
-                lambda event, p=priority: select_priority(p)
-            )
-
-            button.grid(row=0, column=index, padx=4)
-
-            self.priority_buttons[priority] = button
-        ttk.Label(form, text="Tracking").grid(row=2, column=2, sticky="e", padx=(18, 8), pady=6)
-        ttk.Combobox(
-            form,
-            textvariable=self.tracking_var,
-            values=list(TRACKING_LABELS),
-            state="readonly",
-            width=18,
-        ).grid(row=2, column=3, sticky="w", pady=6)
-
-        ttk.Label(form, text="Work minutes").grid(row=3, column=0, sticky="w", pady=6)
-        ttk.Spinbox(form, from_=1, to=720, textvariable=self.work_var, width=8).grid(row=3, column=1, sticky="w", pady=6)
-        ttk.Label(form, text="Break minutes").grid(row=3, column=2, sticky="e", padx=(18, 8), pady=6)
-        ttk.Spinbox(form, from_=1, to=720, textvariable=self.break_var, width=8).grid(row=3, column=3, sticky="w", pady=6)
-
-        ttk.Label(form, text="Date").grid(row=4, column=0, sticky="w", pady=6)
-        ttk.Entry(form, textvariable=self.deadline_var, width=14).grid(row=4, column=1, sticky="w", pady=6)
-        ttk.Label(form, text="Project folder").grid(row=4, column=2, sticky="e", padx=(18, 8), pady=6)
-        ttk.Combobox(
-            form,
-            textvariable=self.folder_var,
-            values=["No folder"] + [str(item["name"]) for item in self.folder_choices],
-            state="readonly",
-            width=18,
-        ).grid(row=4, column=3, sticky="w", pady=6)
-
-        ttk.Label(form, text="Notes").grid(row=5, column=0, columnspan=4, sticky="w", pady=(14, 5))
-        self.notes_text = tk.Text(
-            form,
-            height=7,
-            wrap="word",
-            background=parent.theme["note_paper"],
-            foreground=parent.theme["note_text"],
-            insertbackground=parent.theme["note_text"],
-            relief="flat",
-            borderwidth=0,
-            highlightthickness=0,
-            padx=12,
-            pady=10,
-        )
-        self.notes_text.grid(row=6, column=0, columnspan=4, sticky="ew")
-        self.notes_text.insert("1.0", "")
-
-        section = tk.Label(
-            form,
-            text="Task totals",
-            background=parent.theme["background"],
-            foreground=parent.theme["text"],
-            font=("TkDefaultFont", 12, "bold"),
-            anchor="w",
-        )
-        section.grid(row=7, column=0, columnspan=4, sticky="ew", pady=(18, 8))
-        ttk.Label(form, text="Manual time").grid(row=8, column=0, sticky="w")
-        total_row = ttk.Frame(form)
-        total_row.grid(row=8, column=1, columnspan=3, sticky="w")
-        ttk.Spinbox(total_row, from_=0, to=9999, textvariable=self.manual_hours_var, width=6).grid(row=0, column=0)
-        ttk.Label(total_row, text="h").grid(row=0, column=1, padx=(3, 8))
-        ttk.Spinbox(total_row, from_=0, to=59, textvariable=self.manual_minutes_var, width=6).grid(row=0, column=2)
-        ttk.Label(total_row, text="m").grid(row=0, column=3, padx=(3, 18))
-        ttk.Label(total_row, text="Pomodoros").grid(row=0, column=4)
-        ttk.Spinbox(total_row, from_=0, to=9999, textvariable=self.pomo_completed_var, width=6).grid(row=0, column=5, padx=(5, 3))
-        ttk.Label(total_row, text="of").grid(row=0, column=6)
-        ttk.Spinbox(total_row, from_=0, to=9999, textvariable=self.pomo_estimate_var, width=6).grid(row=0, column=7, padx=(3, 0))
-
-        recurrence_heading = tk.Label(
-            form,
-            text="Recurrence",
-            background=parent.theme["background"],
-            foreground=parent.theme["text"],
-            font=("TkDefaultFont", 12, "bold"),
-            anchor="w",
-        )
-        recurrence_heading.grid(row=9, column=0, columnspan=4, sticky="ew", pady=(18, 8))
-        recurrence = tk.Frame(form, background=parent.theme["background"], borderwidth=0, highlightthickness=0)
-        recurrence.grid(row=10, column=0, columnspan=4, sticky="ew")
-        recurrence.columnconfigure(7, weight=1)
-        ttk.Checkbutton(recurrence, text="Recurring", variable=self.recurrence_enabled_var).grid(row=0, column=0, sticky="w")
-        ttk.Label(recurrence, text="Every").grid(row=0, column=1, padx=(16, 4))
-        ttk.Spinbox(recurrence, from_=1, to=999, textvariable=self.recurrence_interval_var, width=5).grid(row=0, column=2)
-        ttk.Combobox(recurrence, textvariable=self.recurrence_kind_var, values=("days", "weeks", "months"), state="readonly", width=9).grid(row=0, column=3, padx=(4, 14))
-        ttk.Label(recurrence, text="Start").grid(row=0, column=4)
-        ttk.Entry(recurrence, textvariable=self.recurrence_start_var, width=11).grid(row=0, column=5, padx=4)
-        ttk.Label(recurrence, text="End").grid(row=0, column=6)
-        ttk.Entry(recurrence, textvariable=self.recurrence_end_var, width=11).grid(row=0, column=7, sticky="w", padx=4)
-        weekdays = ttk.Frame(recurrence)
-        weekdays.grid(row=1, column=0, columnspan=8, sticky="w", pady=(8, 4))
-        for index, name in enumerate(("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")):
-            ttk.Checkbutton(weekdays, text=name, variable=self.weekday_vars[index]).grid(row=0, column=index, padx=(0, 8))
-        ttk.Label(recurrence, text="Max occurrences").grid(row=2, column=0, sticky="w", pady=4)
-        ttk.Entry(recurrence, textvariable=self.recurrence_max_var, width=8).grid(row=2, column=1, sticky="w")
-        ttk.Label(recurrence, text="Skip dates/ranges").grid(row=3, column=0, sticky="nw", pady=4)
-        self.exceptions_text = tk.Text(
-            recurrence,
-            height=3,
-            width=52,
-            wrap="word",
-            background=parent.theme["field"],
-            foreground=parent.theme["text"],
-            insertbackground=parent.theme["text"],
-            relief="flat",
-            borderwidth=0,
-            highlightthickness=0,
-            padx=8,
-            pady=6,
-        )
-        self.exceptions_text.grid(row=3, column=1, columnspan=7, sticky="ew", pady=4)
-        current_exceptions: list[dict[str, Any]] = []
-        self.exceptions_text.insert(
-            "1.0",
-            ", ".join(
-                item["start_date"] if item["start_date"] == item["end_date"] else f"{item['start_date']}..{item['end_date']}"
-                for item in current_exceptions
-            ),
-        )
-
-        ttk.Label(form, text="Subtasks, one per line").grid(row=11, column=0, columnspan=4, sticky="w", pady=(16, 5))
-        self.subtasks_text = tk.Text(
-            form,
-            height=5,
-            wrap="word",
-            background=parent.theme["field"],
-            foreground=parent.theme["text"],
-            insertbackground=parent.theme["text"],
-            relief="flat",
-            borderwidth=0,
-            highlightthickness=0,
-            padx=8,
-            pady=6,
-        )
-        self.subtasks_text.grid(row=12, column=0, columnspan=4, sticky="ew", pady=(0, 12))
+        basics = QWidget(); form = QFormLayout(basics)
+        self.title_edit = QLineEdit(str(self.task.get("title", "")))
+        self.priority = QComboBox(); self.priority.addItems(PRIORITIES)
+        self.priority.setCurrentText(str(self.task.get("priority", "P4")))
+        self.tracking = QComboBox(); self.tracking.addItems(TRACKING)
+        self.tracking.setCurrentText(str(self.task.get("tracking_mode", "both")))
+        self.work = QSpinBox(); self.work.setRange(1, 720); self.work.setValue(int(self.task.get("task_work_minutes", 25)))
+        self.rest = QSpinBox(); self.rest.setRange(1, 720); self.rest.setValue(int(self.task.get("task_break_minutes", 5)))
+        self.date_edit = QLineEdit(str(self.task.get("deadline") or deadline or ""))
+        self.date_edit.setPlaceholderText("YYYY-MM-DD or blank")
+        self.folders = db.get_project_folders()
+        self.folder = QComboBox(); self.folder.addItem("No folder", None)
+        for item in self.folders: self.folder.addItem(str(item["name"]), int(item["id"]))
+        selected_folder = self.task.get("folder_id") or folder_id
+        index = self.folder.findData(int(selected_folder)) if selected_folder else 0
+        self.folder.setCurrentIndex(max(0, index))
+        self.notes = QTextEdit(str(self.task.get("notes", "")))
+        self.subtasks = QTextEdit()
         if task:
-            self.load_task(task)
+            self.subtasks.setPlainText("\n".join(str(x["text"]) for x in db.get_subtasks(int(task["id"]))))
+        form.addRow("Task", self.title_edit); form.addRow("Priority", self.priority)
+        form.addRow("Tracking", self.tracking); form.addRow("Work minutes", self.work)
+        form.addRow("Break minutes", self.rest); form.addRow("Date", self.date_edit)
+        form.addRow("Project folder", self.folder); form.addRow("Notes", self.notes)
+        form.addRow("Subtasks, one per line", self.subtasks)
+        tabs.addTab(basics, "Task")
 
-        buttons = tk.Frame(
-            shell,
-            background=parent.theme["background"],
-            borderwidth=0,
-            highlightthickness=0,
-            padx=18,
-            pady=14,
-        )
-        buttons.grid(row=1, column=0, columnspan=2, sticky="e")
-        ttk.Button(buttons, text="Cancel", command=self.destroy).grid(row=0, column=0, padx=5)
-        ttk.Button(buttons, text="Save", command=self._save).grid(row=0, column=1, padx=5)
-        self.bind("<Escape>", lambda _event: self.destroy())
-        self.bind("<Control-Return>", lambda _event: self._save())
+        recurring = QWidget(); rform = QFormLayout(recurring)
+        self.recur = QCheckBox("Recurring task"); self.recur.setChecked(bool(self.task.get("recurrence_enabled")))
+        self.recur_kind = QComboBox(); self.recur_kind.addItems(["days", "weeks", "months"])
+        self.recur_kind.setCurrentText(str(self.task.get("recurrence_kind", "days")))
+        self.recur_interval = QSpinBox(); self.recur_interval.setRange(1, 999); self.recur_interval.setValue(int(self.task.get("recurrence_interval", 1)))
+        self.recur_start = QLineEdit(str(self.task.get("recurrence_start") or date.today().isoformat()))
+        self.recur_end = QLineEdit(str(self.task.get("recurrence_end") or ""))
+        self.recur_max = QSpinBox(); self.recur_max.setRange(0, 100000); self.recur_max.setValue(int(self.task.get("recurrence_max") or 0))
+        self.weekdays = QLineEdit(str(self.task.get("recurrence_weekdays") or "")); self.weekdays.setPlaceholderText("0,1,2 (Monday=0)")
+        self.exceptions = QTextEdit()
+        if task:
+            self.exceptions.setPlainText(", ".join(
+                x["start_date"] if x["start_date"] == x["end_date"] else f"{x['start_date']}..{x['end_date']}"
+                for x in db.get_exceptions(int(task["id"]))
+            ))
+        for label, widget in (("", self.recur), ("Every", self.recur_interval), ("Unit", self.recur_kind),
+                              ("Weekdays", self.weekdays), ("Start", self.recur_start), ("End", self.recur_end),
+                              ("Maximum occurrences (0 = none)", self.recur_max), ("Exceptions", self.exceptions)):
+            rform.addRow(label, widget)
+        tabs.addTab(recurring, "Recurrence")
+        if timeless:
+            self.date_edit.clear(); self.date_edit.setEnabled(False); self.recur.setChecked(False); tabs.setTabEnabled(1, False)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.validate); buttons.rejected.connect(self.reject); root.addWidget(buttons)
+        self.title_edit.setFocus(); self.title_edit.selectAll()
+        self.result_data: dict[str, Any] | None = None
 
-        # Linux/Tk requires the Toplevel to be mapped before a modal grab.
-        self.wait_visibility()
-        self.grab_set()
-
-    def load_task(self, task: Mapping[str, Any]) -> None:
-        """Populate the already-built Add Task form with an existing task."""
-        self.task = dict(task)
-        self.title("Edit task")
-        self.heading_label.configure(text="Edit task")
-
-        def as_int(key: str, default: int = 0) -> int:
-            try:
-                return int(self.task.get(key, default) or default)
-            except (TypeError, ValueError):
-                return default
-
-        self.title_var.set(str(self.task.get("title") or ""))
-        self.priority_var.set(str(self.task.get("priority") or "P4"))
-        self.work_var.set(max(1, as_int("task_work_minutes", int(self.parent.default_work_minutes.get()))))
-        self.break_var.set(max(1, as_int("task_break_minutes", int(self.parent.default_break_minutes.get()))))
-        tracking = str(self.task.get("tracking_mode") or "both")
-        self.tracking_var.set(tracking if tracking in TRACKING_LABELS else "both")
-        self.deadline_var.set(str(self.task.get("deadline") or ""))
-        folder_id = as_int("folder_id", 0)
-        self.folder_var.set(self.folder_id_to_name.get(folder_id, "No folder"))
-        manual_seconds = max(0, as_int("manual_seconds", 0))
-        self.manual_hours_var.set(manual_seconds // 3600)
-        self.manual_minutes_var.set((manual_seconds % 3600) // 60)
-        self.pomo_estimate_var.set(max(0, as_int("pomodoro_estimate", 0)))
-        self.pomo_completed_var.set(max(0, as_int("pomodoro_completed", 0)))
-        self.recurrence_enabled_var.set(bool(as_int("recurrence_enabled", 0)))
-        recurrence_kind = str(self.task.get("recurrence_kind") or "days")
-        self.recurrence_kind_var.set(recurrence_kind if recurrence_kind in ("days", "weeks", "months") else "days")
-        self.recurrence_interval_var.set(max(1, as_int("recurrence_interval", 1)))
-        self.recurrence_start_var.set(str(self.task.get("recurrence_start") or date.today().isoformat()))
-        self.recurrence_end_var.set(str(self.task.get("recurrence_end") or ""))
-        recurrence_max = self.task.get("recurrence_max")
-        self.recurrence_max_var.set("" if recurrence_max in (None, "", 0) else str(recurrence_max))
-
-        selected_weekdays = {
-            int(item)
-            for item in str(self.task.get("recurrence_weekdays") or "").split(",")
-            if item.strip().isdigit()
+    def validate(self) -> None:
+        title = " ".join(self.title_edit.text().split())
+        if not title:
+            QMessageBox.warning(self, APP_NAME, "Task title cannot be empty."); return
+        try:
+            deadline = None if self.timeless else parse_date(self.date_edit.text())
+            enabled = False if self.timeless else self.recur.isChecked()
+            start = parse_date(self.recur_start.text()) if enabled else None
+            end = parse_date(self.recur_end.text()) if enabled else None
+            ranges = []
+            for raw in self.exceptions.toPlainText().replace("\n", ",").split(","):
+                raw = raw.strip()
+                if not raw: continue
+                parts = [x.strip() for x in raw.split("..", 1)]
+                a = parse_date(parts[0]); b = parse_date(parts[-1])
+                if a and b: ranges.append(tuple(sorted((a, b))))
+        except ValueError:
+            QMessageBox.warning(self, APP_NAME, "Use dates in YYYY-MM-DD format."); return
+        self.result_data = {
+            "values": {"title": title, "notes": self.notes.toPlainText(), "priority": self.priority.currentText(),
+                "tracking_mode": self.tracking.currentText(), "task_work_minutes": self.work.value(),
+                "task_break_minutes": self.rest.value(), "deadline": deadline, "folder_id": self.folder.currentData(),
+                "recurrence_enabled": enabled, "recurrence_kind": self.recur_kind.currentText(),
+                "recurrence_interval": self.recur_interval.value(), "recurrence_weekdays": self.weekdays.text(),
+                "recurrence_start": start, "recurrence_end": end,
+                "recurrence_max": self.recur_max.value() or None},
+            "subtasks": [x.strip() for x in self.subtasks.toPlainText().splitlines() if x.strip()], "exceptions": ranges,
         }
-        for index, variable in enumerate(self.weekday_vars):
-            variable.set(index in selected_weekdays)
-
-        self.notes_text.delete("1.0", "end")
-        self.notes_text.insert("1.0", str(self.task.get("notes") or ""))
-        self.exceptions_text.delete("1.0", "end")
-        task_id = as_int("id", 0)
-        if task_id:
-            current_exceptions = self.parent.db.get_exceptions(task_id)
-            self.exceptions_text.insert(
-                "1.0",
-                ", ".join(
-                    item["start_date"]
-                    if item["start_date"] == item["end_date"]
-                    else f"{item['start_date']}..{item['end_date']}"
-                    for item in current_exceptions
-                ),
-            )
-            self.subtasks_text.delete("1.0", "end")
-            self.subtasks_text.insert(
-                "1.0",
-                "\n".join(item["text"] for item in self.parent.db.get_subtasks(task_id)),
-            )
-
-    def _save(self) -> None:
-        try:
-            title = " ".join(self.title_var.get().split())
-            if not title:
-                raise ValueError("Task title cannot be empty.")
-            work_minutes = max(1, min(720, int(self.work_var.get())))
-            break_minutes = max(1, min(720, int(self.break_var.get())))
-            deadline = parse_date(self.deadline_var.get())
-            recurrence_start = parse_date(self.recurrence_start_var.get()) if self.recurrence_enabled_var.get() else None
-            recurrence_end = parse_date(self.recurrence_end_var.get()) if self.recurrence_enabled_var.get() else None
-            recurrence_max_text = self.recurrence_max_var.get().strip()
-            recurrence_max = int(recurrence_max_text) if recurrence_max_text else None
-            if recurrence_max is not None and recurrence_max < 1:
-                raise ValueError("Maximum occurrences must be at least 1.")
-            exceptions = parse_exceptions(self.exceptions_text.get("1.0", "end-1c"))
-            manual_seconds = max(0, int(self.manual_hours_var.get())) * 3600 + max(0, int(self.manual_minutes_var.get())) * 60
-            weekdays = ",".join(str(index) for index, variable in enumerate(self.weekday_vars) if variable.get())
-        except (ValueError, tk.TclError) as exc:
-            messagebox.showerror(APP_NAME, str(exc), parent=self)
-            return
-        self.result = {
-            "values": {
-                "title": title,
-                "notes": self.notes_text.get("1.0", "end-1c"),
-                "priority": self.priority_var.get(),
-                "tracking_mode": self.tracking_var.get(),
-                "task_work_minutes": work_minutes,
-                "task_break_minutes": break_minutes,
-                "manual_seconds": manual_seconds,
-                "pomodoro_estimate": max(0, int(self.pomo_estimate_var.get())),
-                "pomodoro_completed": max(0, int(self.pomo_completed_var.get())),
-                "deadline": deadline,
-                "folder_id": self.folder_name_to_id.get(self.folder_var.get()),
-                "recurrence_enabled": self.recurrence_enabled_var.get(),
-                "recurrence_kind": self.recurrence_kind_var.get(),
-                "recurrence_interval": max(1, int(self.recurrence_interval_var.get())),
-                "recurrence_weekdays": weekdays,
-                "recurrence_start": recurrence_start,
-                "recurrence_end": recurrence_end,
-                "recurrence_max": recurrence_max,
-            },
-            "exceptions": exceptions,
-            "subtasks": [
-                line.strip()
-                for line in self.subtasks_text.get("1.0", "end-1c").splitlines()
-                if line.strip()
-            ],
-        }
-        self.destroy()
+        self.accept()
 
 
-class BulkDefaultsDialog(tk.Toplevel):
-    def __init__(self, parent: "PiModoro", count: int):
-        super().__init__(parent)
-        self.result: dict[str, Any] | None = None
-        self.title(f"Add {count} tasks")
-        self.transient(parent)
-        self.grab_set()
-        self.resizable(False, False)
-        frame = ttk.Frame(self, padding=16)
-        frame.grid(row=0, column=0, sticky="nsew")
-        self.priority_var = tk.StringVar(value="P4")
-        self.work_var = tk.IntVar(value=int(parent.default_work_minutes.get()))
-        self.break_var = tk.IntVar(value=int(parent.default_break_minutes.get()))
-        ttk.Label(frame, text=f"Settings for all {count} tasks", font=("TkDefaultFont", 12, "bold")).grid(
-            row=0, column=0, columnspan=2, sticky="w", pady=(0, 12)
-        )
-        ttk.Label(frame, text="Priority").grid(row=1, column=0, sticky="w", pady=5)
-        ttk.Combobox(frame, textvariable=self.priority_var, values=list(PRIORITY_LABELS), state="readonly", width=12).grid(
-            row=1, column=1, sticky="w", pady=5
-        )
-        ttk.Label(frame, text="Work minutes").grid(row=2, column=0, sticky="w", pady=5)
-        ttk.Spinbox(frame, from_=1, to=720, textvariable=self.work_var, width=8).grid(row=2, column=1, sticky="w", pady=5)
-        ttk.Label(frame, text="Break minutes").grid(row=3, column=0, sticky="w", pady=5)
-        ttk.Spinbox(frame, from_=1, to=720, textvariable=self.break_var, width=8).grid(row=3, column=1, sticky="w", pady=5)
-        buttons = ttk.Frame(frame)
-        buttons.grid(row=4, column=0, columnspan=2, sticky="e", pady=(14, 0))
-        ttk.Button(buttons, text="Cancel", command=self.destroy).grid(row=0, column=0, padx=4)
-        ttk.Button(buttons, text="Add", command=self._save).grid(row=0, column=1, padx=4)
+class FolderDialog(QDialog):
+    def __init__(self, parent: QWidget, folder: Mapping[str, Any] | None = None):
+        super().__init__(parent); self.setWindowTitle("Edit folder" if folder else "New folder")
+        self.name = QLineEdit(str(folder.get("name", "")) if folder else ""); self.color = str(folder.get("color", "#526d82")) if folder else "#526d82"
+        layout = QFormLayout(self); layout.addRow("Folder name", self.name)
+        self.color_button = QPushButton(self.color); self.color_button.clicked.connect(self.pick_color); layout.addRow("Colour", self.color_button)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.check); buttons.rejected.connect(self.reject); layout.addRow(buttons)
+        self.name.setFocus(); self.name.selectAll()
 
-    def _save(self) -> None:
-        try:
-            self.result = {
-                "priority": self.priority_var.get(),
-                "task_work_minutes": max(1, min(720, int(self.work_var.get()))),
-                "task_break_minutes": max(1, min(720, int(self.break_var.get()))),
-                "tracking_mode": "both",
-            }
-        except (ValueError, tk.TclError):
-            return
-        self.destroy()
+    def pick_color(self):
+        selected = QColorDialog.getColor(QColor(self.color), self)
+        if selected.isValid(): self.color = selected.name(); self.color_button.setText(self.color)
+
+    def check(self):
+        if self.name.text().strip(): self.accept()
 
 
-class DurationDialog(tk.Toplevel):
-    def __init__(self, parent: "PiModoro", title: str, work: int, break_minutes: int):
-        super().__init__(parent)
-        self.result: tuple[int, int] | None = None
-        self.title(title)
-        self.transient(parent)
-        self.grab_set()
-        self.resizable(False, False)
-        self.work_var = tk.IntVar(value=work)
-        self.break_var = tk.IntVar(value=break_minutes)
-        frame = ttk.Frame(self, padding=16)
-        frame.grid(row=0, column=0)
-        ttk.Label(frame, text="Work minutes").grid(row=0, column=0, sticky="w", pady=6)
-        ttk.Spinbox(frame, from_=1, to=720, textvariable=self.work_var, width=8).grid(row=0, column=1, pady=6)
-        ttk.Label(frame, text="Break minutes").grid(row=1, column=0, sticky="w", pady=6)
-        ttk.Spinbox(frame, from_=1, to=720, textvariable=self.break_var, width=8).grid(row=1, column=1, pady=6)
-        buttons = ttk.Frame(frame)
-        buttons.grid(row=2, column=0, columnspan=2, sticky="e", pady=(12, 0))
-        ttk.Button(buttons, text="Cancel", command=self.destroy).grid(row=0, column=0, padx=4)
-        ttk.Button(buttons, text="Save", command=self._save).grid(row=0, column=1, padx=4)
+class TaskCard(QFrame):
+    edit_requested = Signal(int); delete_requested = Signal(int); toggle_requested = Signal(int)
+    date_requested = Signal(int); notes_requested = Signal(int); selected = Signal(int)
 
-    def _save(self) -> None:
-        try:
-            self.result = (
-                max(1, min(720, int(self.work_var.get()))),
-                max(1, min(720, int(self.break_var.get()))),
-            )
-        except (ValueError, tk.TclError):
-            return
-        self.destroy()
+    def __init__(self, task: Mapping[str, Any], color: str, folder_mode: bool = False):
+        super().__init__(); self.task_id = int(task["id"]); self.start_pos = None
+        self.setObjectName("taskCard"); self.setStyleSheet(f"QFrame#taskCard {{background:{color}; border-radius:7px;}}")
+        layout = QVBoxLayout(self); layout.setContentsMargins(7, 5, 7, 5); layout.setSpacing(2)
+        top = QHBoxLayout(); done = bool(task.get("display_done") or task.get("status") == "completed")
+        check = QPushButton("●" if done else "○"); check.setFixedWidth(28); check.clicked.connect(lambda: self.toggle_requested.emit(self.task_id))
+        title = QLabel(" ".join(str(task["title"]).split())); title.setWordWrap(True)
+        font = title.font(); font.setBold(True); font.setStrikeOut(done); title.setFont(font)
+        top.addWidget(check); top.addWidget(title, 1); layout.addLayout(top)
+        actions = QHBoxLayout()
+        if folder_mode:
+            date_button = QPushButton("Date"); date_button.clicked.connect(lambda: self.date_requested.emit(self.task_id)); actions.addWidget(date_button)
+        else:
+            notes = QPushButton("Notes"); notes.clicked.connect(lambda: self.notes_requested.emit(self.task_id)); actions.addWidget(notes)
+        edit = QPushButton("Edit"); edit.clicked.connect(lambda: self.edit_requested.emit(self.task_id)); actions.addWidget(edit)
+        delete = QPushButton("Delete"); delete.clicked.connect(lambda: self.delete_requested.emit(self.task_id)); actions.addWidget(delete)
+        actions.addStretch(); layout.addLayout(actions)
 
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton: self.start_pos = event.position().toPoint(); self.selected.emit(self.task_id)
+        super().mousePressEvent(event)
 
-class TotalTimeDialog(tk.Toplevel):
-    def __init__(self, parent: "PiModoro", title: str, seconds: int, callback):
-        super().__init__(parent)
-        self.callback = callback
-        self.title(title)
-        self.transient(parent)
-        self.grab_set()
-        self.resizable(False, False)
-        frame = ttk.Frame(self, padding=16)
-        frame.grid(row=0, column=0)
-        self.hours_var = tk.IntVar(value=max(0, seconds) // 3600)
-        self.minutes_var = tk.IntVar(value=(max(0, seconds) % 3600) // 60)
-        ttk.Label(frame, text="Hours").grid(row=0, column=0, sticky="w", pady=6)
-        ttk.Spinbox(frame, from_=0, to=9999, textvariable=self.hours_var, width=8).grid(row=0, column=1, pady=6)
-        ttk.Label(frame, text="Minutes").grid(row=1, column=0, sticky="w", pady=6)
-        ttk.Spinbox(frame, from_=0, to=59, textvariable=self.minutes_var, width=8).grid(row=1, column=1, pady=6)
-        buttons = ttk.Frame(frame)
-        buttons.grid(row=2, column=0, columnspan=2, sticky="e", pady=(12, 0))
-        ttk.Button(buttons, text="Cancel", command=self.destroy).grid(row=0, column=0, padx=4)
-        ttk.Button(buttons, text="Save", command=self._save).grid(row=0, column=1, padx=4)
-
-    def _save(self) -> None:
-        seconds = max(0, int(self.hours_var.get())) * 3600 + max(0, int(self.minutes_var.get())) * 60
-        self.callback(seconds)
-        self.destroy()
+    def mouseMoveEvent(self, event):
+        if self.start_pos is not None and (event.position().toPoint() - self.start_pos).manhattanLength() >= QApplication.startDragDistance():
+            drag = QDrag(self); mime = QMimeData(); mime.setText(str(self.task_id)); drag.setMimeData(mime); drag.exec(Qt.DropAction.MoveAction)
+        super().mouseMoveEvent(event)
 
 
-class ProjectFolderDialog(tk.Toplevel):
-    def __init__(self, parent: "PiModoro", folder: Mapping[str, Any] | None = None):
-        super().__init__(parent)
-        self.parent = parent
-        self.result: tuple[str, str] | None = None
-        self.title("Edit project folder" if folder else "New project folder")
-        self.transient(parent)
-        self.configure(background=parent.theme["background"], borderwidth=0, highlightthickness=0)
-        self.resizable(False, False)
-        frame = tk.Frame(self, background=parent.theme["background"], padx=18, pady=18)
-        frame.grid(row=0, column=0)
-        self.name_var = tk.StringVar(value=str(folder.get("name", "")) if folder else "")
-        self.color = str(folder.get("color", "#526d82")) if folder else "#526d82"
-        ttk.Label(frame, text="Folder name").grid(row=0, column=0, sticky="w", pady=6)
-        entry = ttk.Entry(frame, textvariable=self.name_var, width=30)
-        entry.grid(row=0, column=1, padx=(8, 0), pady=6)
-        entry.focus_set()
-        ttk.Label(frame, text="Colour").grid(row=1, column=0, sticky="w", pady=6)
-        self.color_button = tk.Button(
-            frame, text=self.color, background=self.color, foreground="#ffffff",
-            activebackground=self.color, activeforeground="#ffffff", relief="flat",
-            borderwidth=0, padx=12, pady=6, command=self.choose_color,
-        )
-        self.color_button.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=6)
-        buttons = ttk.Frame(frame)
-        buttons.grid(row=2, column=0, columnspan=2, sticky="e", pady=(12, 0))
-        ttk.Button(buttons, text="Cancel", command=self.destroy).grid(row=0, column=0, padx=4)
-        ttk.Button(buttons, text="Save", command=self.save).grid(row=0, column=1, padx=4)
-        self.bind("<Return>", lambda _e: self.save())
-        self.wait_visibility()
-        self.grab_set()
-
-    def choose_color(self) -> None:
-        chosen = colorchooser.askcolor(color=self.color, parent=self)[1]
-        if chosen:
-            self.color = chosen
-            self.color_button.configure(text=chosen, background=chosen, activebackground=chosen)
-
-    def save(self) -> None:
-        name = " ".join(self.name_var.get().split())
-        if not name:
-            return
-        self.result = (name, self.color)
-        self.destroy()
+class PriorityLane(QFrame):
+    dropped = Signal(int, str)
+    def __init__(self, priority: str):
+        super().__init__(); self.priority = priority; self.setAcceptDrops(True); self.layout_box = QVBoxLayout(self); self.layout_box.setAlignment(Qt.AlignmentFlag.AlignTop)
+        heading = QLabel(PRIORITIES[priority]); font = heading.font(); font.setBold(True); heading.setFont(font); self.layout_box.addWidget(heading)
+    def dragEnterEvent(self, event):
+        if event.mimeData().text().isdigit(): event.acceptProposedAction()
+    def dropEvent(self, event):
+        self.dropped.emit(int(event.mimeData().text()), self.priority); event.acceptProposedAction()
 
 
-class FolderPickerDialog(tk.Toplevel):
-    def __init__(self, parent: "PiModoro", current_folder_id: int | None = None):
-        super().__init__(parent)
-        self.result: int | None | object = _NO_RESULT
-        self.title("Assign project folder")
-        self.transient(parent)
-        self.configure(background=parent.theme["background"])
-        folders = parent.db.get_project_folders()
-        self.name_to_id = {str(item["name"]): int(item["id"]) for item in folders}
-        id_to_name = {int(item["id"]): str(item["name"]) for item in folders}
-        self.folder_var = tk.StringVar(value=id_to_name.get(int(current_folder_id or 0), "No folder"))
-        frame = ttk.Frame(self, padding=16)
-        frame.grid(row=0, column=0)
-        ttk.Label(frame, text="Project folder").grid(row=0, column=0, sticky="w", pady=6)
-        ttk.Combobox(
-            frame, textvariable=self.folder_var, values=["No folder"] + list(self.name_to_id),
-            state="readonly", width=28,
-        ).grid(row=1, column=0, sticky="ew", pady=6)
-        buttons = ttk.Frame(frame)
-        buttons.grid(row=2, column=0, sticky="e", pady=(10, 0))
-        ttk.Button(buttons, text="Cancel", command=self.destroy).grid(row=0, column=0, padx=4)
-        ttk.Button(buttons, text="Assign", command=self.save).grid(row=0, column=1, padx=4)
-        self.wait_visibility()
-        self.grab_set()
-
-    def save(self) -> None:
-        self.result = self.name_to_id.get(self.folder_var.get())
-        self.destroy()
-
-
-_NO_RESULT = object()
-
-
-class MoveTaskDialog(tk.Toplevel):
-    def __init__(self, parent: "PiModoro", task: Mapping[str, Any]):
-        super().__init__(parent)
-        self.result: dict[str, Any] | None = None
-        self.title("Move / schedule task")
-        self.transient(parent)
-        self.configure(background=parent.theme["background"])
-        folders = parent.db.get_project_folders()
-        self.name_to_id = {str(item["name"]): int(item["id"]) for item in folders}
-        id_to_name = {int(item["id"]): str(item["name"]) for item in folders}
-        current_id = int(task.get("folder_id") or 0)
-        self.folder_var = tk.StringVar(value=id_to_name.get(current_id, "No folder"))
-        current_date = task.get("recurrence_start") if task.get("recurrence_enabled") else task.get("deadline")
-        self.date_var = tk.StringVar(value=str(current_date or ""))
-        frame = ttk.Frame(self, padding=16)
-        frame.grid(row=0, column=0)
-        ttk.Label(frame, text="Project folder").grid(row=0, column=0, sticky="w", pady=5)
-        ttk.Combobox(
-            frame, textvariable=self.folder_var, values=["No folder"] + list(self.name_to_id),
-            state="readonly", width=28,
-        ).grid(row=0, column=1, padx=(8, 0), pady=5)
-        ttk.Label(frame, text="Calendar date").grid(row=1, column=0, sticky="w", pady=5)
-        ttk.Entry(frame, textvariable=self.date_var, width=16).grid(row=1, column=1, sticky="w", padx=(8, 0), pady=5)
-        ttk.Label(frame, text="Blank removes a one-off task from the calendar.", style="Muted.TLabel").grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 8))
-        shortcuts = ttk.Frame(frame)
-        shortcuts.grid(row=3, column=0, columnspan=2, sticky="w")
-        ttk.Button(shortcuts, text="Today", command=lambda: self.date_var.set(date.today().isoformat())).grid(row=0, column=0, padx=(0, 5))
-#        ttk.Button(shortcuts, text="Clear date", command=lambda: self.date_var.set("")).grid(row=0, column=1, padx=5)
-        buttons = ttk.Frame(frame)
-        buttons.grid(row=4, column=0, columnspan=2, sticky="e", pady=(12, 0))
-        ttk.Button(buttons, text="Cancel", command=self.destroy).grid(row=0, column=0, padx=4)
-        ttk.Button(buttons, text="Move", command=self.save).grid(row=0, column=1, padx=4)
-        self.wait_visibility()
-        self.grab_set()
-
-    def save(self) -> None:
-        try:
-            scheduled = parse_date(self.date_var.get())
-        except ValueError as exc:
-            messagebox.showerror(APP_NAME, str(exc), parent=self)
-            return
-        self.result = {"folder_id": self.name_to_id.get(self.folder_var.get()), "date": scheduled}
-        self.destroy()
-
-
-class PiModoro(tk.Tk):
+class PiModoro(QMainWindow):
     def __init__(self):
-        super().__init__(className=APP_NAME)
-        self.title(APP_NAME)
-        self.geometry("1380x860")
-        self.minsize(1120, 700)
-        self.protocol("WM_DELETE_WINDOW", self.close_app)
+        super().__init__(); self.db = Database(DB_FILE); self.db.archive_completed_before(date.today())
+        self.theme = dict(DEFAULT_THEME); saved = self.db.get_setting("theme", {})
+        if isinstance(saved, dict): self.theme.update({k: v for k, v in saved.items() if k in self.theme})
+        self.timer_mode = "work"; self.timer_running = False; self.timer_remaining = int(self.db.get_setting("work_minutes", 25)) * 60
+        self.timer_task_id = None; self.timer_started = None; self.clock_started = None; self.current_folder_id = None
+        self.setWindowTitle(APP_NAME); self.resize(1380, 860); self.setMinimumSize(1080, 680); self.setWindowOpacity(float(self.theme["opacity"]))
+        icon = MISC_DIR / "pomo.png"
+        if icon.exists(): self.setWindowIcon(QIcon(str(icon)))
+        self.build_ui(); self.apply_theme(); self.refresh_all()
+        self.tick = QTimer(self); self.tick.timeout.connect(self.every_second); self.tick.start(1000)
 
-        self.db = Database(DB_FILE)
-        self.db.archive_completed_before(date.today())
-        self.last_housekeeping_date = date.today()
-        self.theme = dict(DEFAULT_THEME)
-        saved_theme = self.db.get_setting("theme", {})
-        # Older builds could leave the theme JSON encoded more than once.
-        # Normalize it here so saved colours are applied before any widget is built.
-        for _ in range(2):
-            if isinstance(saved_theme, str):
-                try:
-                    saved_theme = json.loads(saved_theme)
-                except (TypeError, json.JSONDecodeError):
-                    break
-            else:
-                break
-        if isinstance(saved_theme, dict):
-            self.theme.update({key: value for key, value in saved_theme.items() if key in self.theme})
-            # Store the normalized value so subsequent launches do not depend on a re-save.
-            self.db.set_setting("theme", self.theme)
+    def build_ui(self):
+        central = QWidget(); self.setCentralWidget(central); outer = QHBoxLayout(central); outer.setContentsMargins(0, 0, 0, 0)
+        sidebar = QFrame(); sidebar.setObjectName("sidebar"); sidebar.setFixedWidth(190); side = QVBoxLayout(sidebar)
+        name = QLabel("PiModoro"); name.setStyleSheet("font-size:22px;font-weight:bold"); side.addWidget(name)
+        self.pages = QStackedWidget(); self.nav = {}
+        for key, title in (("today", "Today"), ("projects", "Project folders"), ("calendar", "Calendar"), ("history", "History"), ("graveyard", "Graveyard"), ("settings", "Settings")):
+            button = QPushButton(title); button.clicked.connect(lambda _=False, k=key: self.show_page(k)); side.addWidget(button); self.nav[key] = button
+        side.addStretch(); self.clock_button = QPushButton("Clock in"); self.clock_button.clicked.connect(self.toggle_clock); side.addWidget(self.clock_button)
+        self.clock_total = QLabel("Today 0h 00m"); side.addWidget(self.clock_total); outer.addWidget(sidebar)
+        content = QVBoxLayout(); header = QHBoxLayout(); self.header_date = QLabel(); self.header_time = QLabel(); self.header_total = QLabel()
+        header.addWidget(self.header_date); header.addStretch(); header.addWidget(self.header_total); header.addWidget(self.header_time); content.addLayout(header); content.addWidget(self.pages, 1); outer.addLayout(content, 1)
+        self.page_keys = []
+        for key, builder in (("today", self.build_today), ("projects", self.build_projects), ("calendar", self.build_calendar), ("history", self.build_history), ("graveyard", self.build_graveyard), ("settings", self.build_settings)):
+            page = QWidget(); builder(page); self.pages.addWidget(page); self.page_keys.append(key)
 
-        self.default_work_minutes = tk.IntVar(value=int(self.db.get_setting("work_minutes", 25)))
-        self.default_break_minutes = tk.IntVar(value=int(self.db.get_setting("rest_minutes", 5)))
-        self.auto_start = tk.BooleanVar(value=bool(self.db.get_setting("auto_start", False)))
-        self.lock_enabled = tk.BooleanVar(value=bool(self.db.get_setting("lock_enabled", False)))
+    def apply_theme(self):
+        t = self.theme
+        self.setStyleSheet(f"""
+            QMainWindow, QWidget {{background:{t['background']}; color:{t['text']};}}
+            QFrame#sidebar {{background:{t['panel']};}}
+            QPushButton {{background:{t['accent']}; color:{t['text']}; border:0; border-radius:5px; padding:6px 9px;}}
+            QPushButton:hover {{background:{t['hover']};}}
+            QLineEdit,QTextEdit,QComboBox,QSpinBox,QTableWidget,QListWidget,QCalendarWidget {{background:{t['field']}; color:{t['text']}; border:1px solid {t['accent']}; padding:4px;}}
+            QHeaderView::section {{background:{t['panel']}; color:{t['text']}; padding:5px; border:0;}}
+        """)
 
-        self.style = ttk.Style(self)
-        self.style.theme_use("clam")
-        self.pages: dict[str, ttk.Frame] = {}
-        self.nav_buttons: dict[str, tk.Button] = {}
-        self.current_page = "tasks"
-        self.selected_project_folder_id: int | None = None
-        self.project_folder_records: dict[str, dict[str, Any]] = {}
-        self.calendar_records: dict[str, dict[str, Any]] = {}
-        self.selected_task_id: int | None = None
-        self.history_records: dict[str, dict[str, Any]] = {}
-        self.calendar_month = date.today().replace(day=1)
-        self.selected_calendar_date = date.today()
-        self.drag_item: str | None = None
-        self.inline_editor: tk.Entry | None = None
-        self.selected_task_ids_set: set[int] = set()
-        self.expanded_task_ids: set[int] = set()
-        self.task_cards: dict[int, tk.Frame] = {}
-        self.priority_lanes: dict[str, tk.Frame] = {}
-        self.task_card_order: list[int] = []
-        self.task_priorities: dict[int, str] = {}
-        self.task_fonts: list[tkfont.Font] = []
-        self.accordion_editors: dict[int, tuple[tk.Text, tk.Text, tk.Label]] = {}
-        self.last_selected_task_id: int | None = None
-        self.drag_task_id: int | None = None
-        self.drag_start_y = 0
-        self.drag_moved = False
+    def show_page(self, key):
+        self.pages.setCurrentIndex(self.page_keys.index(key)); self.refresh_all()
 
-        self.clock_state = self._load_clock_state()
-        self.timer_mode = "work"
-        self.timer_running = False
-        self.timer_remaining = max(1, int(self.default_work_minutes.get())) * 60
-        self.timer_target_end: datetime | None = None
-        self.timer_started_at: datetime | None = None
-        self.timer_task_id: int | None = None
-        self.timer_job: str | None = None
-        self._load_timer_state()
+    def build_today(self, page):
+        root = QVBoxLayout(page); timer = QHBoxLayout(); self.work_total = QLabel(); self.timer_label = QLabel("25:00"); self.timer_label.setStyleSheet("font-size:52px;font-weight:bold"); self.break_total = QLabel()
+        timer.addWidget(self.work_total); timer.addStretch(); timer.addWidget(self.timer_label); timer.addStretch(); timer.addWidget(self.break_total); root.addLayout(timer)
+        controls = QHBoxLayout()
+        for text, fn in (("Work", lambda: self.start_timer("work")), ("Break", lambda: self.start_timer("break")), ("Reset", self.reset_timer)):
+            b = QPushButton(text); b.clicked.connect(fn); controls.addWidget(b)
+        self.timer_task = QLabel("No task selected"); controls.addWidget(self.timer_task); controls.addStretch(); root.addLayout(controls)
+        add = QHBoxLayout(); self.quick = QLineEdit(); self.quick.setPlaceholderText("Add a task for today"); self.quick.returnPressed.connect(self.add_today_task)
+        button = QPushButton("Add task"); button.clicked.connect(self.add_today_task); add.addWidget(self.quick); add.addWidget(button); root.addLayout(add)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); holder = QWidget(); self.today_grid = QHBoxLayout(holder); self.today_grid.setAlignment(Qt.AlignmentFlag.AlignTop); scroll.setWidget(holder); root.addWidget(scroll, 1)
+        bottom = QHBoxLayout(); archive = QPushButton("Archive selected"); archive.clicked.connect(self.archive_selected); bottom.addWidget(archive); bottom.addStretch(); root.addLayout(bottom)
+        self.selected_task_id = None
 
-        self._apply_theme()
-        self._build_ui()
-        self._bind_global_scroll_handlers()
-        self.refresh_all()
-        # Tk/ttk can finish resolving widget styles only after the window is mapped.
-        # Rebuild the UI once from the already-loaded persisted settings so startup
-        # looks exactly like it does after pressing "Save colours", without writing
-        # anything back to the database.
-        self._startup_settings_refresh_done = False
-        self.after(75, self._apply_persisted_settings_after_map)
-        self._tick_header()
-        if self.timer_running:
-            self._timer_tick()
+    def make_board(self, layout, tasks, folder_mode=False):
+        clear_layout(layout)
+        for priority in PRIORITIES:
+            lane = PriorityLane(priority); lane.dropped.connect(self.change_priority); layout.addWidget(lane, 1)
+            subset = [x for x in tasks if str(x.get("priority", "P4")) == priority]
+            for task in subset:
+                card = TaskCard(task, self.theme[priority], folder_mode)
+                card.edit_requested.connect(self.edit_task); card.delete_requested.connect(self.delete_task)
+                card.toggle_requested.connect(self.toggle_task); card.selected.connect(self.select_task)
+                card.notes_requested.connect(self.edit_notes); card.date_requested.connect(self.date_task)
+                lane.layout_box.addWidget(card)
+            lane.layout_box.addStretch()
 
-    # ---------- Theme ----------
+    def refresh_today(self): self.make_board(self.today_grid, self.db.get_active_tasks(date.today()))
 
-    def _apply_persisted_settings_after_map(self) -> None:
-        """Rebuild once after mapping so persisted settings are visible immediately."""
-        if getattr(self, "_startup_settings_refresh_done", False):
-            return
-        self._startup_settings_refresh_done = True
-        self._rebuild_ui_for_theme(save_graveyard=False)
+    def add_today_task(self):
+        dialog = TaskDialog(self, self.db, deadline=date.today().isoformat())
+        if self.quick.text().strip(): dialog.title_edit.setText(self.quick.text().strip())
+        if dialog.exec() and dialog.result_data:
+            task_id = self.db.create_task(dialog.result_data["values"]); self.db.replace_subtasks(task_id, dialog.result_data["subtasks"]); self.db.set_exceptions(task_id, dialog.result_data["exceptions"]); self.quick.clear(); self.refresh_all()
 
-    def _apply_theme(self) -> None:
-        theme = self.theme
-        self.configure(background=theme["background"])
-        try:
-            self.attributes("-alpha", float(theme["opacity"]))
-        except (tk.TclError, TypeError, ValueError):
-            self.attributes("-alpha", 1.0)
-        style = self.style
-        style.configure(".", background=theme["background"], foreground=theme["text"])
-        style.configure("TFrame", background=theme["background"])
-        style.configure("Panel.TFrame", background=theme["panel"])
-        style.configure("TLabel", background=theme["background"], foreground=theme["text"])
-        style.configure("Panel.TLabel", background=theme["panel"], foreground=theme["text"])
-        style.configure("Muted.TLabel", background=theme["background"], foreground=theme["muted"])
-        style.configure("PanelMuted.TLabel", background=theme["panel"], foreground=theme["muted"])
-        style.configure(
-            "TButton",
-            background=theme["accent"],
-            foreground=theme["text"],
-            borderwidth=0,
-            padding=(11, 7),
-        )
-        style.map("TButton", background=[("active", theme["hover"]), ("pressed", theme["panel"])])
-        style.configure("TEntry", fieldbackground=theme["field"], foreground=theme["text"])
-        style.configure("TSpinbox", fieldbackground=theme["field"], foreground=theme["text"])
-        style.configure("TCombobox", fieldbackground=theme["field"], foreground=theme["text"])
-        style.map(
-            "TCombobox",
-            fieldbackground=[("readonly", theme["field"])],
-            foreground=[("readonly", theme["text"])],
-        )
-        style.configure("TCheckbutton", background=theme["background"], foreground=theme["text"])
-        style.configure("TLabelframe", background=theme["background"], foreground=theme["text"])
-        style.configure("TLabelframe.Label", background=theme["background"], foreground=theme["text"])
-        style.configure(
-            "Treeview",
-            background=theme["field"],
-            fieldbackground=theme["field"],
-            foreground=theme["text"],
-            rowheight=34,
-            borderwidth=0,
-        )
-        style.configure("Treeview.Heading", background=theme["panel"], foreground=theme["text"])
-        style.map("Treeview", background=[("selected", theme["accent"])])
-
-    # ---------- Layout ----------
-
-    def _build_ui(self) -> None:
-        self.columnconfigure(1, weight=1)
-        self.rowconfigure(0, weight=1)
-        self._build_sidebar()
-        content = ttk.Frame(self)
-        content.grid(row=0, column=1, sticky="nsew")
-        content.columnconfigure(0, weight=1)
-        content.rowconfigure(1, weight=1)
-        self._build_header(content)
-        self.page_container = ttk.Frame(content)
-        self.page_container.grid(row=1, column=0, sticky="nsew")
-        self.page_container.columnconfigure(0, weight=1)
-        self.page_container.rowconfigure(0, weight=1)
-
-        for name in ("tasks", "projects", "calendar", "history", "graveyards", "settings"):
-            frame = ttk.Frame(self.page_container)
-            frame.grid(row=0, column=0, sticky="nsew")
-            self.pages[name] = frame
-        self._build_tasks_page(self.pages["tasks"])
-        self._build_projects_page(self.pages["projects"])
-        self._build_calendar_page(self.pages["calendar"])
-        self._build_history_page(self.pages["history"])
-        self._build_graveyards_page(self.pages["graveyards"])
-        self._build_settings_page(self.pages["settings"])
-        self.show_page("tasks")
-
-    def _build_sidebar(self) -> None:
-        sidebar = tk.Frame(self, background=self.theme["panel"], width=185)
-        sidebar.grid(row=0, column=0, sticky="nsw")
-        sidebar.grid_propagate(False)
-        tk.Label(
-            sidebar,
-            text=APP_NAME,
-            background=self.theme["panel"],
-            foreground=self.theme["text"],
-            font=("TkDefaultFont", 20, "bold"),
-            anchor="w",
-        ).pack(fill="x", padx=16, pady=(18, 20))
-        labels = (
-            ("tasks", "Today"),
-            ("projects", "Project folders"),
-            ("calendar", "Calendar"),
-            ("history", "History"),
-            ("graveyards", "Graveyards"),
-            ("settings", "Settings"),
-        )
-        for key, label in labels:
-            button = tk.Button(
-                sidebar,
-                text=label,
-                anchor="w",
-                relief="flat",
-                borderwidth=0,
-                padx=16,
-                pady=10,
-                background=self.theme["panel"],
-                foreground=self.theme["text"],
-                activebackground=self.theme["accent"],
-                activeforeground=self.theme["text"],
-                command=lambda page=key: self.show_page(page),
-            )
-            button.pack(fill="x")
-            self.nav_buttons[key] = button
-
-        spacer = tk.Frame(sidebar, background=self.theme["panel"])
-        spacer.pack(fill="both", expand=True)
-        self.clock_button = tk.Button(
-            sidebar,
-            text="Clock in",
-            relief="flat",
-            borderwidth=0,
-            padx=12,
-            pady=12,
-            command=self.toggle_clock,
-            foreground="#ffffff",
-        )
-        self.clock_button.pack(fill="x", padx=14, pady=(0, 8))
-        self.sidebar_work_total = tk.Label(
-            sidebar,
-            text="Today 0h 00m",
-            background=self.theme["panel"],
-            foreground=self.theme["muted"],
-        )
-        self.sidebar_work_total.pack(fill="x", padx=14, pady=(0, 16))
-        self._refresh_clock_button()
-
-    def _build_header(self, parent: ttk.Frame) -> None:
-        header = ttk.Frame(parent, style="Panel.TFrame", padding=(18, 10))
-        header.grid(row=0, column=0, sticky="ew")
-        header.columnconfigure(0, weight=1)
-        self.header_date = ttk.Label(header, text="", style="Panel.TLabel", font=("TkDefaultFont", 13, "bold"))
-        self.header_date.grid(row=0, column=0, sticky="w")
-        self.header_time = ttk.Label(header, text="", style="PanelMuted.TLabel", font=("TkDefaultFont", 12))
-        self.header_time.grid(row=1, column=0, sticky="w")
-        self.header_totals = ttk.Label(header, text="", style="Panel.TLabel", justify="right")
-        self.header_totals.grid(row=0, column=1, rowspan=2, sticky="e")
-
-    def _update_daily_totals_label(self) -> None:
-        if not all(
-            hasattr(self, name)
-            for name in ("work_duration_label", "break_duration_label", "daily_totals_label")
-        ):
-            return
-
-        total_work = 0
-        total_break = 0
-        remaining_work = 0
-        remaining_break = 0
-
-        try:
-            tasks = self.db.get_active_tasks(date.today())
-            for task in tasks:
-                work_minutes = max(0, int(task.get("task_work_minutes", 0) or 0))
-                break_minutes = max(0, int(task.get("task_break_minutes", 0) or 0))
-                total_work += work_minutes
-                total_break += break_minutes
-
-                done = bool(
-                    task.get("display_done")
-                    or task.get("status") == "completed"
-                )
-                if not done:
-                    remaining_work += work_minutes
-                    remaining_break += break_minutes
-
-            self.work_duration_label.configure(
-                text=f"Total work today: {format_duration(total_work * 60)}"
-            )
-            self.break_duration_label.configure(
-                text=f"Total break today: {format_duration(total_break * 60)}"
-            )
-            self.daily_totals_label.configure(
-                text=(
-                    f"Left: {format_duration(remaining_work * 60)} work"
-                    f"   ·   {format_duration(remaining_break * 60)} break"
-                )
-            )
-        except (TypeError, ValueError, tk.TclError):
-            self.work_duration_label.configure(text="Total work today: 0h 00m")
-            self.break_duration_label.configure(text="Total break today: 0h 00m")
-            self.daily_totals_label.configure(text="Left: 0h 00m work   ·   0h 00m break")
-
-    def show_page(self, name: str) -> None:
-        if name not in self.pages:
-            return
-        if self.current_page == "graveyards" and name != "graveyards":
-            self.save_graveyard_notes()
-        self.current_page = name
-        self.pages[name].tkraise()
-        for key, button in self.nav_buttons.items():
-            button.configure(background=self.theme["accent"] if key == name else self.theme["panel"])
-        if name == "projects":
-            self.refresh_project_folders()
-        elif name == "calendar":
-            self.refresh_calendar()
-        elif name == "history":
-            self.refresh_history()
-
-    # ---------- Tasks page ----------
-
-    def _build_tasks_page(self, page: ttk.Frame) -> None:
-        page.columnconfigure(0, weight=1)
-        page.rowconfigure(2, weight=1)
-
-        timer = ttk.Frame(page, padding=(18, 22, 18, 18))
-        timer.grid(row=0, column=0, sticky="ew")
-        timer.columnconfigure(1, weight=1)
-        self.work_duration_label = tk.Label(
-            timer,
-            text="Total work today: 0h 00m",
-            background=self.theme["background"],
-            foreground=self.theme["muted"],
-            font=("TkDefaultFont", 11),
-        )
-        self.work_duration_label.grid(row=0, column=0, sticky="e", padx=(0, 18))
-        self.timer_label = ttk.Label(timer, text="25:00", font=("TkDefaultFont", 56, "bold"), anchor="center")
-        self.timer_label.grid(row=0, column=1, sticky="ew")
-        self.break_duration_label = tk.Label(
-            timer,
-            text="Total break today: 0h 00m",
-            background=self.theme["background"],
-            foreground=self.theme["muted"],
-            font=("TkDefaultFont", 11),
-        )
-        self.break_duration_label.grid(row=0, column=2, sticky="w", padx=(18, 0))
-        self.timer_task_label = ttk.Label(timer, text="No task selected", style="Muted.TLabel", anchor="center")
-        self.timer_task_label.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(12, 4))
-        self.daily_totals_label = ttk.Label(timer, text="Left: 0h 00m work · 0h 00m break", style="Muted.TLabel", anchor="center")
-        self.daily_totals_label.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(4, 14))
-        self._update_daily_totals_label()
-        controls = ttk.Frame(timer)
-        controls.grid(row=3, column=0, columnspan=3)
-        ttk.Button(controls, text="Work", command=lambda: self.start_timer_mode("work")).grid(row=0, column=0, padx=4)
-        ttk.Button(controls, text="Break", command=lambda: self.start_timer_mode("break")).grid(row=0, column=1, padx=4)
-        ttk.Button(controls, text="Reset", command=self.reset_timer).grid(row=0, column=2, padx=4)
-        ttk.Button(controls, text="Edit", command=self.edit_selected_task).grid(row=0, column=3, padx=4)
-
-        addbar = ttk.Frame(page, padding=(18, 2, 18, 8))
-        addbar.grid(row=1, column=0, sticky="ew")
-        addbar.columnconfigure(0, weight=1)
-        self.quick_add_var = tk.StringVar()
-        self.quick_add_entry = ttk.Entry(addbar, textvariable=self.quick_add_var)
-        self.quick_add_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        bind_entry_editor_shortcuts(self.quick_add_entry)
-        self.quick_add_entry.bind("<Return>", lambda _event: self.open_add_dialog(default_deadline=date.today().isoformat()))
-        self.quick_add_entry.bind("<<Paste>>", self._quick_paste)
-        ttk.Button(addbar, text="Add task", command=lambda: self.open_add_dialog(default_deadline=date.today().isoformat())).grid(row=0, column=1)
-
-        list_frame = ttk.Frame(page, padding=(18, 0, 18, 14))
-        list_frame.grid(row=2, column=0, sticky="nsew")
-        list_frame.columnconfigure(0, weight=1)
-        list_frame.rowconfigure(0, weight=1)
-
-        self.task_canvas = tk.Canvas(
-            list_frame,
-            background=self.theme["background"],
-            borderwidth=0,
-            highlightthickness=0,
-            relief="flat",
-        )
-        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.task_canvas.yview)
-        self.task_canvas.configure(yscrollcommand=scrollbar.set)
-        self.task_canvas.grid(row=0, column=0, sticky="nsew")
-        scrollbar.grid(row=0, column=1, sticky="ns")
-
-        self.task_list_inner = tk.Frame(
-            self.task_canvas,
-            background=self.theme["background"],
-            borderwidth=0,
-            highlightthickness=0,
-        )
-        self.task_list_window = self.task_canvas.create_window((0, 0), window=self.task_list_inner, anchor="nw")
-        self.task_list_inner.bind("<Configure>", self._update_task_scrollregion)
-        self.task_canvas.bind(
-            "<Configure>",
-            lambda event: self.task_canvas.itemconfigure(self.task_list_window, width=event.width),
-        )
-
-        actions = ttk.Frame(list_frame)
-        actions.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
-        tk.Button(
-            actions,
-            text="Archive selected",
-            command=self.archive_selected_tasks,
-            background=self.theme["panel"],
-            foreground=self.theme["muted"],
-            activebackground=self.theme["hover"],
-            activeforeground=self.theme["text"],
-            relief="flat",
-            borderwidth=0,
-            highlightthickness=0,
-            padx=5,
-            pady=1,
-            font=("TkDefaultFont", 8),
-            cursor="hand2",
-        ).grid(row=0, column=0, padx=(0, 4))
-        self.selection_hint = ttk.Label(
-            actions,
-            text="Ctrl-click selects several tasks. Drag a task card to reorder.",
-            style="Muted.TLabel",
-        )
-        self.selection_hint.grid(row=0, column=1, sticky="e", padx=(18, 0))
-        actions.columnconfigure(1, weight=1)
-
-    def _bind_global_scroll_handlers(self) -> None:
-        """Bind wheel/touchpad events once; theme rebuilds must not stack handlers."""
-        self.bind_all("<MouseWheel>", self._on_global_mousewheel)
-        self.bind_all("<Button-4>", self._on_global_mousewheel)
-        self.bind_all("<Button-5>", self._on_global_mousewheel)
-
-    def _on_global_mousewheel(self, event: tk.Event) -> str | None:
-        if self.current_page == "tasks":
-            return self._on_task_mousewheel(event)
-        if self.current_page == "graveyards":
-            return self._on_graveyard_mousewheel(event)
-        return None
-
-    def _pointer_over_task_list(self) -> bool:
-        if self.current_page != "tasks" or not hasattr(self, "task_canvas"):
-            return False
-        try:
-            x = self.winfo_pointerx()
-            y = self.winfo_pointery()
-            left = self.task_canvas.winfo_rootx()
-            top = self.task_canvas.winfo_rooty()
-            return left <= x < left + self.task_canvas.winfo_width() and top <= y < top + self.task_canvas.winfo_height()
-        except tk.TclError:
-            return False
-
-    def _update_task_scrollregion(self, _event: tk.Event | None = None) -> None:
-        """Keep the Today canvas scroll range anchored exactly at its top edge."""
-        if not hasattr(self, "task_canvas") or not hasattr(self, "task_list_inner"):
-            return
-        self.update_idletasks()
-        width = max(self.task_canvas.winfo_width(), self.task_list_inner.winfo_reqwidth())
-        height = max(1, self.task_list_inner.winfo_reqheight())
-        self.task_canvas.configure(scrollregion=(0, 0, width, height))
-        first, _last = self.task_canvas.yview()
-        if first < 0.0001:
-            self.task_canvas.yview_moveto(0.0)
-
-    def _on_task_mousewheel(self, event: tk.Event) -> str | None:
-        """Support Linux touchpad/wheel scrolling without overshooting the top."""
-        if not self._pointer_over_task_list():
-            return None
-
-        number = getattr(event, "num", None)
-        if number == 4:
-            direction = -1
-        elif number == 5:
-            direction = 1
-        else:
-            delta = int(getattr(event, "delta", 0) or 0)
-            if delta == 0:
-                return None
-            direction = -1 if delta > 0 else 1
-
-        first, last = self.task_canvas.yview()
-        visible = max(0.01, last - first)
-        max_first = max(0.0, 1.0 - visible)
-        # A small fixed fraction feels closer to webpage touchpad scrolling and
-        # prevents large Linux wheel deltas from jumping past the content edge.
-        target = min(max_first, max(0.0, first + direction * 0.035))
-        self.task_canvas.yview_moveto(target)
-        return "break"
-
-    def render_tasks(self, preserve_selection: Iterable[int] = ()) -> None:
-        self.save_open_accordions()
-        self.selected_task_ids_set.update(int(item) for item in preserve_selection)
-        for child in self.task_list_inner.winfo_children():
-            child.destroy()
-        self.task_cards.clear()
-        self.priority_lanes.clear()
-        self.task_card_order.clear()
-        self.task_priorities.clear()
-        self.task_fonts.clear()
-        self.accordion_editors.clear()
-
-        tasks = self.db.get_active_tasks(date.today())
-        valid_ids = {int(task["id"]) for task in tasks}
-        self.selected_task_ids_set.intersection_update(valid_ids)
-        if self.selected_task_id not in valid_ids:
-            self.selected_task_id = next(iter(self.selected_task_ids_set), None)
-
-        # Today is intentionally a four-column priority board and only shows
-        # tasks that have explicitly been assigned to today.
-        for column, priority in enumerate(("P1", "P2", "P3", "P4")):
-            self.task_list_inner.columnconfigure(column, weight=1, uniform="priority")
-            lane = tk.Frame(
-                self.task_list_inner,
-                background=self.theme["background"],
-                borderwidth=0,
-                highlightthickness=0,
-                padx=4,
-            )
-            lane.grid(row=0, column=column, sticky="nsew")
-            self.priority_lanes[priority] = lane
-            tk.Label(
-                lane,
-                text=PRIORITY_LABELS[priority],
-                background=self.theme["background"],
-                foreground=self.theme[priority],
-                font=("TkDefaultFont", 10, "bold"),
-                anchor="w",
-            ).pack(fill="x", pady=(0, 8))
-            lane_tasks = [task for task in tasks if str(task.get("priority", "P4")) == priority]
-            if not lane_tasks:
-                tk.Label(
-                    lane,
-                    text="No tasks",
-                    background=self.theme["background"],
-                    foreground=self.theme["muted"],
-                    anchor="w",
-                    font=("TkDefaultFont", 9),
-                ).pack(fill="x", pady=(4, 0))
-                continue
-            for task in lane_tasks:
-                self._build_task_card(task, lane)
-
-        if not tasks:
-            # Keep the four priority columns visible even on an empty day.
-            self.selected_task_id = None
-
-        self._refresh_task_card_selection()
-        self._update_timer_labels()
-
-    def _build_task_card(self, task: Mapping[str, Any], parent: tk.Widget | None = None) -> None:
-        task_id = int(task["id"])
-        priority = str(task.get("priority", "P4"))
-        self.task_card_order.append(task_id)
-        self.task_priorities[task_id] = priority
-        background = self.theme.get(priority, self.theme["field"])
-        foreground = contrast_text(background)
-        done = bool(task.get("display_done") or task.get("status") == "completed")
-        parent = parent or self.task_list_inner
-
-        card = tk.Frame(
-            parent,
-            background=background,
-            borderwidth=0,
-            highlightthickness=2,
-            highlightbackground=background,
-            highlightcolor=self.theme["accent"],
-        )
-        # Use most of the priority lane horizontally while keeping the card vertically thin.
-        card.pack(fill="x", padx=(0, 3), pady=(0, 4))
-        self.task_cards[task_id] = card
-
-        row = tk.Frame(card, background=background, borderwidth=0, highlightthickness=0, padx=3, pady=2)
-        row.pack(fill="x")
-        row.columnconfigure(1, weight=1)
-
-        circle = tk.Button(
-            row,
-            text="●" if done else "○",
-            command=lambda item=task_id: self.toggle_task_done(item),
-            background=background,
-            foreground=foreground,
-            activebackground=background,
-            activeforeground=foreground,
-            relief="flat",
-            borderwidth=0,
-            highlightthickness=0,
-            font=("TkDefaultFont", 16, "bold"),
-            cursor="hand2",
-            padx=3,
-            pady=0,
-        )
-        circle.grid(row=0, column=0, sticky="n")
-
-        title_font = tkfont.Font(font=("TkDefaultFont", 9, "bold"))
-        title_font.configure(overstrike=done)
-        self.task_fonts.append(title_font)
-        title = tk.Label(
-            row,
-            text=" ".join(str(task["title"]).split()),
-            background=background,
-            foreground=foreground,
-            font=title_font,
-            anchor="w",
-            justify="left",
-            wraplength=210,
-            cursor="xterm",
-            padx=2,
-            pady=1,
-        )
-        title.grid(row=0, column=1, sticky="w")
-        title.bind("<Button-1>", lambda event, item=task_id, widget=title: self.begin_card_title_edit(item, widget, event))
-
-        notes_button = tk.Button(
-            row,
-            text="Notes ▾" if task_id in self.expanded_task_ids else "Notes ▸",
-            command=lambda item=task_id: self.toggle_task_accordion(item),
-            background=background,
-            foreground=foreground,
-            activebackground=background,
-            activeforeground=foreground,
-            relief="flat",
-            borderwidth=0,
-            highlightthickness=0,
-            cursor="hand2",
-            padx=3,
-            pady=1,
-        )
-        notes_button.grid(row=1, column=1, sticky="w", padx=(0, 3), pady=0)
-
-        delete_button = tk.Button(
-            row,
-            text="Delete",
-            command=lambda item=task_id: self.delete_task_permanently(item),
-            background=background,
-            foreground=foreground,
-            activebackground=background,
-            activeforeground=foreground,
-            relief="flat",
-            borderwidth=0,
-            highlightthickness=0,
-            cursor="hand2",
-            padx=3,
-            pady=1,
-        )
-        delete_button.grid(row=1, column=2, sticky="w", padx=(0, 3), pady=0)
-
-        timer_button = tk.Button(
-            row,
-            text=f"{int(task.get('task_work_minutes', 25))}/{int(task.get('task_break_minutes', 5))} min",
-            command=lambda item=task_id: self.edit_task_durations(item),
-            background=background,
-            foreground=foreground,
-            activebackground=background,
-            activeforeground=foreground,
-            relief="flat",
-            borderwidth=0,
-            highlightthickness=0,
-            cursor="hand2",
-            padx=3,
-            pady=1,
-        )
-        timer_button.grid(row=1, column=3, sticky="w", padx=(2, 1), pady=0)
-
-        for widget in (card, row):
-            widget.bind("<ButtonPress-1>", lambda event, item=task_id: self._card_press(item, event))
-            widget.bind("<B1-Motion>", self._card_motion)
-            widget.bind("<ButtonRelease-1>", self._card_release)
-            widget.bind("<Double-1>", lambda _event, item=task_id: self.edit_task(item))
-
-        if task_id in self.expanded_task_ids:
-            self._build_task_accordion(card, task, background, foreground)
-
-    def _build_task_accordion(
-        self,
-        card: tk.Frame,
-        task: Mapping[str, Any],
-        card_background: str,
-        card_foreground: str,
-    ) -> None:
-        task_id = int(task["id"])
-        details = tk.Frame(
-            card,
-            background=self.theme["field"],
-            borderwidth=0,
-            highlightthickness=0,
-            padx=8,
-            pady=8,
-        )
-        details.pack(fill="x", padx=4, pady=(0, 5))
-        details.columnconfigure(0, weight=1)
-
-        tk.Label(
-            details, text="Notes", background=self.theme["field"],
-            foreground=self.theme["text"], anchor="w",
-        ).grid(row=0, column=0, sticky="w")
-        notes = tk.Text(
-            details, height=5, width=25, wrap="word",
-            background=self.theme["note_paper"], foreground=self.theme["note_text"],
-            insertbackground=self.theme["note_text"], relief="flat", borderwidth=0,
-            highlightthickness=0, padx=7, pady=6,
-        )
-        notes.grid(row=1, column=0, sticky="ew", pady=(4, 7))
-        notes.insert("1.0", str(task.get("notes", "")))
-
-        tk.Label(
-            details, text="Subtasks, one per line", background=self.theme["field"],
-            foreground=self.theme["text"], anchor="w",
-        ).grid(row=2, column=0, sticky="w")
-        subtasks = tk.Text(
-            details, height=4, width=25, wrap="word",
-            background=self.theme["background"], foreground=self.theme["text"],
-            insertbackground=self.theme["text"], relief="flat", borderwidth=0,
-            highlightthickness=0, padx=7, pady=6,
-        )
-        subtasks.grid(row=3, column=0, sticky="ew", pady=(4, 7))
-        subtasks.insert("1.0", "\n".join(item["text"] for item in self.db.get_subtasks(task_id)))
-
-        metadata_parts = [
-            TRACKING_LABELS.get(str(task.get("tracking_mode", "both")), str(task.get("tracking_mode", "both"))),
-        ]
-        if task.get("deadline"):
-            metadata_parts.append(f"Due {task['deadline']}")
-        if task.get("folder_id"):
-            folder = self.db.get_project_folder(int(task["folder_id"]))
-            if folder:
-                metadata_parts.append(str(folder["name"]))
-        if task.get("recurrence_enabled"):
-            metadata_parts.append(f"Every {task.get('recurrence_interval', 1)} {task.get('recurrence_kind', 'days')}")
-        metadata = tk.Label(
-            details, text=" · ".join(metadata_parts), background=self.theme["field"],
-            foreground=self.theme["muted"], anchor="w", justify="left", wraplength=210,
-        )
-        metadata.grid(row=4, column=0, sticky="ew", pady=(2, 6))
-
-        actions = tk.Frame(details, background=self.theme["field"], borderwidth=0, highlightthickness=0)
-        actions.grid(row=5, column=0, sticky="w")
-        ttk.Button(actions, text="Save", command=lambda item=task_id: self.save_task_accordion(item)).grid(row=0, column=0, padx=(0, 3))
-        ttk.Button(actions, text="Edit", command=lambda item=task_id: self.edit_task(item)).grid(row=0, column=1, padx=3)
-        ttk.Button(actions, text="Move", command=lambda item=task_id: self.move_task_dialog(item)).grid(row=0, column=2, padx=3)
-        status = tk.Label(actions, text="", background=self.theme["field"], foreground=self.theme["muted"])
-        status.grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
-        self.accordion_editors[task_id] = (notes, subtasks, status)
-
-    def selected_task_ids(self) -> list[int]:
-        return [task_id for task_id in self.task_card_order if task_id in self.selected_task_ids_set]
-
-    def _refresh_task_card_selection(self) -> None:
-        for task_id, card in self.task_cards.items():
-            selected = task_id in self.selected_task_ids_set
-            card.configure(
-                highlightbackground=self.theme["accent"] if selected else card.cget("background"),
-                highlightthickness=3 if selected else 2,
-            )
-
-    def select_task_card(self, task_id: int, event: tk.Event | None = None) -> None:
-        state = int(getattr(event, "state", 0)) if event is not None else 0
-        control = bool(state & 0x0004)
-        shift = bool(state & 0x0001)
-        if shift and self.last_selected_task_id in self.task_card_order:
-            start = self.task_card_order.index(self.last_selected_task_id)
-            end = self.task_card_order.index(task_id)
-            low, high = sorted((start, end))
-            self.selected_task_ids_set.update(self.task_card_order[low : high + 1])
-        elif control:
-            if task_id in self.selected_task_ids_set:
-                self.selected_task_ids_set.remove(task_id)
-            else:
-                self.selected_task_ids_set.add(task_id)
-        else:
-            self.selected_task_ids_set = {task_id}
-        if task_id in self.selected_task_ids_set:
-            self.selected_task_id = task_id
-            self.last_selected_task_id = task_id
-            if not self.timer_running:
-                self.timer_task_id = task_id
-                self.timer_remaining = self._task_duration_seconds(task_id, self.timer_mode)
-                self.timer_started_at = None
-                self._save_timer_state()
-        elif self.selected_task_id == task_id:
-            self.selected_task_id = next(iter(self.selected_task_ids_set), None)
-        self._refresh_task_card_selection()
-        self._update_timer_labels()
-
-    def open_add_dialog(
-        self,
-        prefill: str | None = None,
-        default_deadline: str | None = None,
-        default_folder_id: int | None = None,
-    ) -> None:
-        text = self.quick_add_var.get() if prefill is None else prefill
-        if default_deadline is None and self.current_page == "tasks":
-            default_deadline = date.today().isoformat()
-        if "\n" in text or "\r" in text:
-            self.handle_pasted_text(text)
-            return
-        dialog = TaskDialog(
-            self,
-            prefill=" ".join(text.split()),
-            default_deadline=default_deadline,
-            default_folder_id=default_folder_id,
-        )
-        self.wait_window(dialog)
-        if not dialog.result:
-            return
-        task_id = self.db.create_task(dialog.result["values"] | {"subtasks": dialog.result["subtasks"]})
-        self.db.set_exceptions(task_id, dialog.result["exceptions"])
-        self.quick_add_var.set("")
-        self.selected_task_id = task_id
-        self.selected_task_ids_set = {task_id}
-        self.timer_task_id = task_id
-        self.refresh_all()
-
-    def _quick_paste(self, _event: tk.Event) -> str | None:
-        try:
-            text = self.clipboard_get()
-        except tk.TclError:
-            return None
-        if "\n" not in text and "\r" not in text:
-            return None
-        self.after_idle(lambda: self.handle_pasted_text(text))
-        return "break"
-
-    def handle_pasted_text(self, text: str) -> None:
-        lines = [" ".join(line.split()) for line in text.splitlines() if line.strip()]
-        if not lines:
-            return
-        if len(lines) == 1:
-            self.open_add_dialog(lines[0])
-            return
-        choice = messagebox.askyesnocancel(
-            "Paste list",
-            f"The pasted text contains {len(lines)} lines.\n\nYes: add each line as a separate task.\nNo: add everything as one task.",
-            parent=self,
-        )
-        if choice is None:
-            return
-        if choice is False:
-            self.open_add_dialog(" ".join(lines))
-            return
-        dialog = BulkDefaultsDialog(self, len(lines))
-        self.wait_window(dialog)
-        if not dialog.result:
-            return
-        created: list[int] = []
-        for line in lines:
-            created.append(self.db.create_task({"title": line, "deadline": date.today().isoformat()} | dialog.result))
-        self.quick_add_var.set("")
-        if hasattr(self, "add_text_widget"):
-            self.add_text_widget.delete("1.0", "end")
-        self.selected_task_id = created[0]
-        self.selected_task_ids_set = set(created)
-        self.timer_task_id = created[0]
-        self.refresh_all()
-
-    def edit_selected_task(self) -> None:
-        ids = self.selected_task_ids()
-        task_id = ids[0] if ids else self.selected_task_id
-        if task_id is None:
-            return
-        self.edit_task(task_id)
-
-    def edit_task(self, task_id: int) -> None:
-        self.save_open_accordions()
+    def edit_task(self, task_id):
         task = self.db.get_task(task_id)
-        if not task:
-            return
-        dialog = TaskDialog(self, task=task)
-        self.wait_window(dialog)
-        if not dialog.result:
-            return
-        self.db.update_task(task_id, dialog.result["values"])
-        self.db.set_exceptions(task_id, dialog.result["exceptions"])
-        self.db.replace_subtasks(task_id, dialog.result["subtasks"])
-        self.selected_task_id = task_id
-        self.selected_task_ids_set = {task_id}
-        self.refresh_all()
+        if not task: return
+        dialog = TaskDialog(self, self.db, task)
+        if dialog.exec() and dialog.result_data:
+            self.db.update_task(task_id, dialog.result_data["values"]); self.db.replace_subtasks(task_id, dialog.result_data["subtasks"]); self.db.set_exceptions(task_id, dialog.result_data["exceptions"]); self.refresh_all()
 
-    def move_task_dialog(self, task_id: int) -> None:
+    def select_task(self, task_id): self.selected_task_id = task_id; self.timer_task_id = task_id; self.refresh_timer_labels()
+
+    def toggle_task(self, task_id):
         task = self.db.get_task(task_id)
-        if not task:
-            return
-        dialog = MoveTaskDialog(self, task)
-        self.wait_window(dialog)
-        if not dialog.result:
-            return
-        values: dict[str, Any] = {"folder_id": dialog.result["folder_id"]}
-        if task.get("recurrence_enabled"):
-            if dialog.result["date"]:
-                values["recurrence_start"] = dialog.result["date"]
-        else:
-            values["deadline"] = dialog.result["date"]
-        self.db.update_task(task_id, values)
-        self.selected_task_id = task_id
+        if task and task.get("status") == "completed": self.db.reopen_task(task_id, date.today())
+        else: self.db.complete_task(task_id, date.today())
         self.refresh_all()
 
-    def begin_card_title_edit(self, task_id: int, label: tk.Label, event: tk.Event | None = None) -> str:
-        self.select_task_card(task_id, event)
-        if self.inline_editor is not None and self.inline_editor.winfo_exists():
-            self.inline_editor.destroy()
-        parent = label.master
-        original = label.cget("text")
-        label.grid_remove()
-        editor = tk.Entry(
-            parent,
-            background=self.theme["note_paper"],
-            foreground=self.theme["note_text"],
-            insertbackground=self.theme["note_text"],
-            relief="flat",
-            borderwidth=0,
-            highlightthickness=0,
-            font=("TkDefaultFont", 10, "bold"),
-        )
-        editor.insert(0, original)
-        editor.select_range(0, "end")
-        bind_entry_editor_shortcuts(editor)
-        editor.grid(row=0, column=1, sticky="w", padx=3, pady=6)
-        editor.focus_set()
-        self.inline_editor = editor
-        saved = False
-
-        def finish(save: bool) -> None:
-            nonlocal saved
-            if saved:
-                return
-            saved = True
-            new_title = " ".join(editor.get().split())
-            if save and new_title:
-                self.db.update_task(task_id, {"title": new_title})
-            if editor.winfo_exists():
-                editor.destroy()
-            self.inline_editor = None
-            self.render_tasks([task_id])
-
-        editor.bind("<Return>", lambda _event: finish(True))
-        editor.bind("<FocusOut>", lambda _event: finish(True))
-        editor.bind("<Escape>", lambda _event: finish(False))
-        return "break"
-
-    def toggle_task_done(self, task_id: int) -> None:
-        self.save_open_accordions()
+    def delete_task(self, task_id):
         task = self.db.get_task(task_id)
-        if not task:
-            return
-        done = bool(task.get("status") == "completed")
-        if task.get("recurrence_enabled"):
-            today_items = self.db.calendar_tasks_for_range(date.today(), date.today()).get(date.today().isoformat(), [])
-            done = any(int(item["id"]) == task_id and item.get("occurrence_completed") for item in today_items)
-        if done:
-            self.db.reopen_task(task_id, date.today())
-        else:
-            self.db.complete_task(task_id, date.today())
-        self.db.archive_completed_before(date.today())
-        self.selected_task_id = task_id
-        self.selected_task_ids_set = {task_id}
-        self.refresh_all()
+        if task and confirm(self, "Delete permanently", f"Permanently delete '{task['title']}'? This cannot be undone."):
+            self.db.delete_task(task_id); self.refresh_all()
 
-    def archive_selected_tasks(self) -> None:
-        ids = self.selected_task_ids()
-        if not ids:
-            return
-        if not messagebox.askyesno(
-            "Archive tasks",
-            f"Archive {len(ids)} selected task{'s' if len(ids) != 1 else ''}? They remain searchable in History.",
-            parent=self,
-        ):
-            return
-        self.save_open_accordions()
-        for task_id in ids:
-            self.db.archive_task(task_id)
-        self.selected_task_ids_set.difference_update(ids)
-        if self.selected_task_id in ids:
-            self.selected_task_id = None
-        self.refresh_all()
-
-    def delete_selected_tasks(self) -> None:
-        ids = self.selected_task_ids()
-        if not ids:
-            return
-        count = len(ids)
-        if not messagebox.askyesno(
-            "Delete permanently",
-            f"Permanently delete {count} selected task{'s' if count != 1 else ''}? This cannot be undone.",
-            parent=self,
-        ):
-            return
-        self.save_open_accordions()
-        for task_id in ids:
-            self.db.delete_task(task_id)
-        if self.timer_task_id in ids:
-            self.pause_timer()
-            self.timer_task_id = None
-        self.selected_task_ids_set.difference_update(ids)
-        if self.selected_task_id in ids:
-            self.selected_task_id = None
-        self.refresh_all()
-
-    def delete_task_permanently(self, task_id: int) -> None:
+    def edit_notes(self, task_id):
         task = self.db.get_task(task_id)
-        if not task:
-            return
-        if not messagebox.askyesno(
-            "Delete permanently",
-            f"Permanently delete '{task['title']}'? This cannot be undone.",
-            parent=self,
-        ):
-            return
-        self.save_open_accordions()
-        self.db.delete_task(task_id)
-        if self.timer_task_id == task_id:
-            self.pause_timer()
-            self.timer_task_id = None
-        self.expanded_task_ids.discard(task_id)
-        self.selected_task_ids_set.discard(task_id)
-        if self.selected_task_id == task_id:
-            self.selected_task_id = None
-        self.refresh_all()
+        if not task: return
+        dialog = QDialog(self); dialog.setWindowTitle("Notes and subtasks"); layout = QVBoxLayout(dialog)
+        notes = QTextEdit(str(task.get("notes", ""))); subtasks = QTextEdit("\n".join(x["text"] for x in self.db.get_subtasks(task_id)))
+        layout.addWidget(QLabel("Notes")); layout.addWidget(notes); layout.addWidget(QLabel("Subtasks, one per line")); layout.addWidget(subtasks)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel); buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject); layout.addWidget(buttons)
+        if dialog.exec(): self.db.set_task_notes(task_id, notes.toPlainText()); self.db.replace_subtasks(task_id, subtasks.toPlainText().splitlines()); self.refresh_all()
 
-    def toggle_task_accordion(self, task_id: int) -> None:
-        self.save_open_accordions()
-        if task_id in self.expanded_task_ids:
-            self.expanded_task_ids.remove(task_id)
-        else:
-            self.expanded_task_ids.add(task_id)
-        self.selected_task_id = task_id
-        self.selected_task_ids_set = {task_id}
-        self.render_tasks([task_id])
+    def change_priority(self, task_id, priority): self.db.update_task(task_id, {"priority": priority}); self.refresh_all()
+    def archive_selected(self):
+        if self.selected_task_id and confirm(self, "Archive task", "Archive the selected task?"): self.db.archive_task(self.selected_task_id); self.refresh_all()
 
-    def save_task_accordion(self, task_id: int) -> None:
-        editors = self.accordion_editors.get(task_id)
-        if not editors:
-            return
-        notes, subtasks, status = editors
-        self.db.update_task(task_id, {"notes": notes.get("1.0", "end-1c")})
-        self.db.replace_subtasks(
-            task_id,
-            [line.strip() for line in subtasks.get("1.0", "end-1c").splitlines() if line.strip()],
-        )
-        status.configure(text="Saved")
-        self.refresh_history()
+    def build_projects(self, page):
+        root = QVBoxLayout(page); top = QHBoxLayout(); self.folder_title = QLabel("Project folders"); top.addWidget(self.folder_title); top.addStretch()
+        for text, fn in (("New folder", self.new_folder), ("Edit folder", self.edit_folder), ("Delete folder", self.delete_folder), ("Add task", self.add_folder_task)):
+            b = QPushButton(text); b.clicked.connect(fn); top.addWidget(b)
+        root.addLayout(top); body = QHBoxLayout(); self.folder_list = QListWidget(); self.folder_list.currentItemChanged.connect(self.choose_folder); body.addWidget(self.folder_list, 1)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); holder = QWidget(); self.folder_board = QHBoxLayout(holder); self.folder_board.setAlignment(Qt.AlignmentFlag.AlignTop); scroll.setWidget(holder); body.addWidget(scroll, 4); root.addLayout(body, 1)
 
-    def save_open_accordions(self) -> None:
-        for task_id, editors in list(getattr(self, "accordion_editors", {}).items()):
-            try:
-                notes, subtasks, _status = editors
-                if not notes.winfo_exists() or not subtasks.winfo_exists():
-                    continue
-                self.db.update_task(task_id, {"notes": notes.get("1.0", "end-1c")})
-                self.db.replace_subtasks(
-                    task_id,
-                    [line.strip() for line in subtasks.get("1.0", "end-1c").splitlines() if line.strip()],
-                )
-            except tk.TclError:
-                continue
+    def refresh_projects(self):
+        selected = self.current_folder_id; self.folder_list.blockSignals(True); self.folder_list.clear()
+        for folder in self.db.get_project_folders():
+            item = QListWidgetItem(str(folder["name"])); item.setData(Qt.ItemDataRole.UserRole, int(folder["id"])); self.folder_list.addItem(item)
+            if int(folder["id"]) == selected: self.folder_list.setCurrentItem(item)
+        self.folder_list.blockSignals(False)
+        tasks = self.db.tasks_for_folder(selected) if selected else []
+        self.make_board(self.folder_board, tasks, True)
 
-    def edit_task_durations(self, task_id: int) -> None:
-        self.select_task_card(task_id)
-        self.edit_selected_durations()
+    def choose_folder(self, current, _previous): self.current_folder_id = int(current.data(Qt.ItemDataRole.UserRole)) if current else None; self.refresh_projects()
+    def new_folder(self):
+        dialog = FolderDialog(self)
+        if dialog.exec(): self.current_folder_id = self.db.create_project_folder(dialog.name.text(), dialog.color); self.refresh_all()
+    def edit_folder(self):
+        folder = self.db.get_project_folder(self.current_folder_id) if self.current_folder_id else None
+        if not folder: return
+        dialog = FolderDialog(self, folder)
+        if dialog.exec(): self.db.update_project_folder(self.current_folder_id, dialog.name.text(), dialog.color); self.refresh_all()
+    def delete_folder(self):
+        folder = self.db.get_project_folder(self.current_folder_id) if self.current_folder_id else None
+        if folder and confirm(self, "Delete folder", f"Delete '{folder['name']}'? Tasks will be kept without a folder."):
+            self.db.delete_project_folder(self.current_folder_id); self.current_folder_id = None; self.refresh_all()
+    def add_folder_task(self):
+        if not self.current_folder_id: return
+        dialog = TaskDialog(self, self.db, folder_id=self.current_folder_id, timeless=True)
+        if dialog.exec() and dialog.result_data:
+            values = dict(dialog.result_data["values"]); values.update({"folder_id": self.current_folder_id, "deadline": None, "recurrence_enabled": False, "recurrence_start": None})
+            task_id = self.db.create_task(values); self.db.replace_subtasks(task_id, dialog.result_data["subtasks"]); self.refresh_all()
+    def date_task(self, task_id):
+        task = self.db.get_task(task_id)
+        value, ok = QInputDialog.getText(self, "Task date", "Date (YYYY-MM-DD, blank = unscheduled):", text=str(task.get("deadline") or ""))
+        if ok:
+            try: self.db.update_task(task_id, {"deadline": parse_date(value), "recurrence_enabled": False}); self.refresh_all()
+            except ValueError: QMessageBox.warning(self, APP_NAME, "Use YYYY-MM-DD format.")
 
-    def _card_press(self, task_id: int, event: tk.Event) -> None:
-        self.select_task_card(task_id, event)
-        self.drag_task_id = task_id
-        self.drag_start_y = event.y_root
-        self.drag_moved = False
+    def build_calendar(self, page):
+        root = QHBoxLayout(page); self.calendar = QCalendarWidget(); self.calendar.selectionChanged.connect(self.refresh_calendar_detail); root.addWidget(self.calendar, 2)
+        right = QVBoxLayout(); self.calendar_label = QLabel(); self.calendar_tasks = QListWidget(); right.addWidget(self.calendar_label); right.addWidget(self.calendar_tasks, 1)
+        add = QPushButton("Add task on this date"); add.clicked.connect(self.add_calendar_task); right.addWidget(add); root.addLayout(right, 1)
+    def refresh_calendar_detail(self):
+        selected = self.calendar.selectedDate().toPython(); self.calendar_label.setText(selected.strftime("%A, %d %B %Y")); self.calendar_tasks.clear()
+        for task in self.db.calendar_tasks_for_range(selected, selected).get(selected.isoformat(), []): self.calendar_tasks.addItem(f"{task['priority']}  {task['title']}")
+    def add_calendar_task(self):
+        selected = self.calendar.selectedDate().toPython(); dialog = TaskDialog(self, self.db, deadline=selected.isoformat())
+        if dialog.exec() and dialog.result_data:
+            task_id = self.db.create_task(dialog.result_data["values"]); self.db.replace_subtasks(task_id, dialog.result_data["subtasks"]); self.db.set_exceptions(task_id, dialog.result_data["exceptions"]); self.refresh_all()
 
-    def _card_motion(self, event: tk.Event) -> None:
-        if self.drag_task_id is None:
-            return
-        if abs(event.y_root - self.drag_start_y) >= 8:
-            self.drag_moved = True
+    def build_history(self, page):
+        root = QVBoxLayout(page); filters = QHBoxLayout(); self.history_search = QLineEdit(); self.history_search.setPlaceholderText("Search history"); self.history_search.textChanged.connect(self.refresh_history)
+        self.history_status = QComboBox(); self.history_status.addItems(["all", "active", "completed", "archived"]); self.history_status.currentTextChanged.connect(self.refresh_history)
+        filters.addWidget(self.history_search); filters.addWidget(self.history_status); root.addLayout(filters)
+        self.history = QTableWidget(0, 6); self.history.setHorizontalHeaderLabels(["Title", "Status", "Priority", "Date", "Folder", "Updated"]); self.history.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows); root.addWidget(self.history)
+        actions = QHBoxLayout()
+        for text, fn in (("Edit", self.edit_history), ("Restore", self.restore_history), ("Archive", self.archive_history)):
+            b = QPushButton(text); b.clicked.connect(fn); actions.addWidget(b)
+        actions.addStretch(); root.addLayout(actions)
+    def history_id(self):
+        row = self.history.currentRow(); return int(self.history.item(row, 0).data(Qt.ItemDataRole.UserRole)) if row >= 0 else None
+    def refresh_history(self):
+        records = self.db.search_history(search=self.history_search.text(), status=self.history_status.currentText()); self.history.setRowCount(len(records))
+        for row, item in enumerate(records):
+            folder = self.db.get_project_folder(int(item["folder_id"])) if item.get("folder_id") else None
+            values = [item["title"], item["status"], item["priority"], item.get("occurrence_date") or item.get("deadline") or "", folder["name"] if folder else "", item.get("updated_at") or ""]
+            for col, value in enumerate(values): self.history.setItem(row, col, QTableWidgetItem(str(value)))
+            self.history.item(row, 0).setData(Qt.ItemDataRole.UserRole, int(item["id"]))
+        self.history.resizeColumnsToContents()
+    def edit_history(self):
+        task_id = self.history_id()
+        if task_id: self.edit_task(task_id)
+    def restore_history(self):
+        task_id = self.history_id()
+        if task_id: self.db.restore_task(task_id); self.refresh_all()
+    def archive_history(self):
+        task_id = self.history_id()
+        if task_id: self.db.archive_task(task_id); self.refresh_all()
 
-    def _card_release(self, event: tk.Event) -> None:
-        task_id = self.drag_task_id
-        self.drag_task_id = None
-        if task_id is None or not self.drag_moved or task_id not in self.task_card_order:
-            return
-        target_id = task_id
-        target_distance: int | None = None
-        source_priority = self.task_priorities.get(task_id)
+    def build_graveyard(self, page):
+        root = QVBoxLayout(page); root.addWidget(QLabel("Graveyard notebook")); self.graveyard = QTextEdit(); self.graveyard.setAcceptRichText(False); self.graveyard.setPlainText(str(self.db.get_setting("graveyard_notes", ""))); root.addWidget(self.graveyard, 1)
+        save = QPushButton("Save"); save.clicked.connect(self.save_graveyard); root.addWidget(save)
+    def save_graveyard(self): self.db.set_setting("graveyard_notes", self.graveyard.toPlainText())
 
-        # Dropping over another priority column changes the task priority.
-        dropped_priority = None
-        x_root = event.x_root
-        for priority, lane in self.priority_lanes.items():
-            left = lane.winfo_rootx()
-            right = left + lane.winfo_width()
-            if left <= x_root <= right:
-                dropped_priority = priority
-                break
+    def build_settings(self, page):
+        root = QVBoxLayout(page); form = QFormLayout(); self.work_setting = QSpinBox(); self.work_setting.setRange(1, 720); self.work_setting.setValue(int(self.db.get_setting("work_minutes", 25)))
+        self.break_setting = QSpinBox(); self.break_setting.setRange(1, 720); self.break_setting.setValue(int(self.db.get_setting("rest_minutes", 5)))
+        self.lock_setting = QCheckBox(); self.lock_setting.setChecked(bool(self.db.get_setting("lock_enabled", False))); form.addRow("Default work minutes", self.work_setting); form.addRow("Default break minutes", self.break_setting); form.addRow("Lock screen after work", self.lock_setting); root.addLayout(form)
+        save = QPushButton("Save settings"); save.clicked.connect(self.save_settings); root.addWidget(save)
+        exports = QHBoxLayout()
+        for text, kind in (("Export tasks CSV", "tasks"), ("Export work CSV", "work"), ("Export pomodoros CSV", "pomodoros")):
+            b = QPushButton(text); b.clicked.connect(lambda _=False, k=kind: self.export_csv(k)); exports.addWidget(b)
+        root.addLayout(exports); root.addStretch()
+    def save_settings(self): self.db.set_setting("work_minutes", self.work_setting.value()); self.db.set_setting("rest_minutes", self.break_setting.value()); self.db.set_setting("lock_enabled", self.lock_setting.isChecked())
+    def export_csv(self, kind):
+        path, _ = QFileDialog.getSaveFileName(self, "Export CSV", f"pimodoro_{kind}.csv", "CSV (*.csv)")
+        if not path: return
+        if kind == "tasks": rows = self.db.all_tasks()
+        elif kind == "work": rows = self.db.work_sessions()
+        else: rows = self.db.all_pomodoros()
+        if not rows: return
+        with open(path, "w", newline="", encoding="utf-8") as stream:
+            writer = csv.DictWriter(stream, fieldnames=list(rows[0])); writer.writeheader(); writer.writerows(rows)
 
-        if dropped_priority and dropped_priority != source_priority:
-            self.db.update_task(task_id, {"priority": dropped_priority})
-            self.db.set_task_order([item for item in self.task_card_order if item != task_id])
-            self.render_tasks(self.selected_task_ids_set)
-            return
-
-        for candidate_id, card in self.task_cards.items():
-            if self.task_priorities.get(candidate_id) != source_priority:
-                continue
-            midpoint = card.winfo_rooty() + card.winfo_height() // 2
-            distance = abs(event.y_root - midpoint)
-            if target_distance is None or distance < target_distance:
-                target_distance = distance
-                target_id = candidate_id
-        if target_id == task_id:
-            return
-        order = list(self.task_card_order)
-        order.remove(task_id)
-        target_index = order.index(target_id)
-        target_card = self.task_cards[target_id]
-        if event.y_root > target_card.winfo_rooty() + target_card.winfo_height() // 2:
-            target_index += 1
-        order.insert(target_index, task_id)
-        self.db.set_task_order(order)
-        self.render_tasks(self.selected_task_ids_set)
-
-    # ---------- Task timer ----------
-
-    def _load_timer_state(self) -> None:
-        state = self.db.get_setting("task_timer_state", {})
-        if not isinstance(state, dict):
-            return
-        self.timer_mode = "break" if state.get("mode") in ("break", "rest") else "work"
-        self.timer_task_id = int(state["task_id"]) if state.get("task_id") not in (None, "") else None
-        self.selected_task_id = self.timer_task_id
-        default = self._task_duration_seconds(self.timer_task_id, self.timer_mode)
-        self.timer_remaining = max(0, int(state.get("remaining", default) or default))
-        self.timer_running = bool(state.get("running", False))
-        target = state.get("target_end")
-        started = state.get("started_at")
-        try:
-            self.timer_target_end = datetime.fromisoformat(target) if target else None
-            self.timer_started_at = datetime.fromisoformat(started) if started else None
-        except ValueError:
-            self.timer_target_end = None
-            self.timer_started_at = None
-            self.timer_running = False
-        if self.timer_running and self.timer_target_end:
-            self.timer_remaining = max(0, math.ceil((self.timer_target_end - datetime.now().astimezone()).total_seconds()))
-
-    def _save_timer_state(self) -> None:
-        self.db.set_setting(
-            "task_timer_state",
-            {
-                "mode": self.timer_mode,
-                "task_id": self.timer_task_id,
-                "remaining": self.timer_remaining,
-                "running": self.timer_running,
-                "target_end": self.timer_target_end.isoformat(timespec="seconds") if self.timer_target_end else None,
-                "started_at": self.timer_started_at.isoformat(timespec="seconds") if self.timer_started_at else None,
-            },
-        )
-
-    def _task_duration_minutes(self, task_id: int | None, mode: str) -> int:
-        if task_id is not None:
-            task = self.db.get_task(task_id)
-            if task:
-                key = "task_work_minutes" if mode == "work" else "task_break_minutes"
-                return max(1, int(task.get(key, 25 if mode == "work" else 5) or 1))
-        return max(1, int(self.default_work_minutes.get() if mode == "work" else self.default_break_minutes.get()))
-
-    def _task_duration_seconds(self, task_id: int | None, mode: str) -> int:
-        return self._task_duration_minutes(task_id, mode) * 60
-
-    def start_timer_mode(self, mode: str) -> None:
-        if mode not in ("work", "break"):
-            return
-        requested_task_id = self.selected_task_id if self.selected_task_id is not None else self.timer_task_id
-        if self.timer_running:
-            if self.timer_mode == mode and requested_task_id == self.timer_task_id:
-                self.pause_timer()
-                return
-            self.pause_timer(record_incomplete=self.timer_mode == "work")
-        full_seconds = self._task_duration_seconds(requested_task_id, mode)
-        can_resume = (
-            self.timer_mode == mode
-            and self.timer_task_id == requested_task_id
-            and 0 < self.timer_remaining < full_seconds
-        )
-        self.timer_task_id = requested_task_id
-        self.timer_mode = mode
-        now = datetime.now().astimezone()
-        if can_resume:
-            elapsed = full_seconds - self.timer_remaining
-            self.timer_started_at = now - timedelta(seconds=elapsed)
-        else:
-            self.timer_remaining = full_seconds
-            self.timer_started_at = now
-        self.timer_running = True
-        self.timer_target_end = now + timedelta(seconds=self.timer_remaining)
-        self._save_timer_state()
-        self._update_timer_labels()
-        self._timer_tick()
-
-    def pause_timer(self, record_incomplete: bool = False) -> None:
-        if self.timer_running and self.timer_target_end:
-            self.timer_remaining = max(0, math.ceil((self.timer_target_end - datetime.now().astimezone()).total_seconds()))
-        if record_incomplete and self.timer_mode == "work" and self.timer_started_at:
-            now = datetime.now().astimezone()
-            actual = max(0, int((now - self.timer_started_at).total_seconds()))
-            if actual > 0:
-                self.db.add_pomodoro_session(
-                    self.timer_task_id,
-                    self.timer_started_at.isoformat(timespec="seconds"),
-                    now.isoformat(timespec="seconds"),
-                    self._task_duration_seconds(self.timer_task_id, "work"),
-                    actual,
-                    False,
-                )
-        self.timer_running = False
-        self.timer_target_end = None
-        if self.timer_job:
-            try:
-                self.after_cancel(self.timer_job)
-            except tk.TclError:
-                pass
-            self.timer_job = None
-        self._save_timer_state()
-        self._update_timer_labels()
-
-    def reset_timer(self) -> None:
-        self.pause_timer()
-        self.timer_remaining = self._task_duration_seconds(self.timer_task_id, self.timer_mode)
-        self.timer_started_at = None
-        self._save_timer_state()
-        self._update_timer_labels()
-
-    def _timer_tick(self) -> None:
-        if not self.timer_running or self.timer_target_end is None:
-            return
-        self.timer_remaining = max(0, math.ceil((self.timer_target_end - datetime.now().astimezone()).total_seconds()))
-        self._update_timer_labels()
-        if self.timer_remaining <= 0:
-            self.timer_running = False
-            self.timer_target_end = None
-            self.timer_job = None
-            self._timer_complete()
-            return
-        self.timer_job = self.after(200, self._timer_tick)
-
-    def _timer_complete(self) -> None:
-        self.bell()
-        now = datetime.now().astimezone()
+    def start_timer(self, mode):
+        if self.timer_running and self.timer_mode == mode: self.pause_timer(); return
+        self.timer_mode = mode; self.timer_remaining = self.duration_for(mode) * 60; self.timer_running = True; self.timer_started = datetime.now().astimezone(); self.refresh_timer_labels()
+    def duration_for(self, mode):
+        task = self.db.get_task(self.timer_task_id) if self.timer_task_id else None; key = "task_work_minutes" if mode == "work" else "task_break_minutes"
+        return int(task.get(key)) if task else int(self.db.get_setting("work_minutes" if mode == "work" else "rest_minutes", 25 if mode == "work" else 5))
+    def pause_timer(self): self.timer_running = False
+    def reset_timer(self): self.timer_running = False; self.timer_remaining = self.duration_for(self.timer_mode) * 60; self.refresh_timer_labels()
+    def refresh_timer_labels(self):
+        self.timer_label.setText(f"{self.timer_remaining // 60:02d}:{self.timer_remaining % 60:02d}")
+        task = self.db.get_task(self.timer_task_id) if self.timer_task_id else None; self.timer_task.setText(str(task["title"]) if task else "No task selected")
+    def complete_timer(self):
+        ended = datetime.now().astimezone(); planned = self.duration_for(self.timer_mode) * 60
         if self.timer_mode == "work":
-            planned = self._task_duration_seconds(self.timer_task_id, "work")
-            started = self.timer_started_at or now - timedelta(seconds=planned)
-            self.db.add_pomodoro_session(
-                self.timer_task_id,
-                started.isoformat(timespec="seconds"),
-                now.isoformat(timespec="seconds"),
-                planned,
-                planned,
-                True,
-            )
-            if self.lock_enabled.get():
-                self.after(100, self._lock_after_work)
-            self.timer_mode = "break"
-        else:
-            self.timer_mode = "work"
-        self.timer_remaining = self._task_duration_seconds(self.timer_task_id, self.timer_mode)
-        self.timer_started_at = None
-        self._save_timer_state()
-        self._update_timer_labels()
+            self.db.add_pomodoro_session(self.timer_task_id, (self.timer_started or ended).isoformat(), ended.isoformat(), planned, planned, True)
+            if self.db.get_setting("lock_enabled", False): self.lock_screen()
+        self.timer_running = False; self.timer_remaining = self.duration_for(self.timer_mode) * 60; self.refresh_all()
+    def lock_screen(self):
+        for command in (["cinnamon-screensaver-command", "--lock"], ["loginctl", "lock-session"], ["xdg-screensaver", "lock"]):
+            if shutil.which(command[0]):
+                try: subprocess.run(command, timeout=5, check=False); return
+                except (OSError, subprocess.SubprocessError): pass
+
+    def toggle_clock(self):
+        if self.clock_started:
+            end = datetime.now().astimezone(); self.db.add_work_session(self.clock_started.date().isoformat(), self.clock_started.isoformat(), end.isoformat(), int((end - self.clock_started).total_seconds())); self.clock_started = None
+        else: self.clock_started = datetime.now().astimezone()
         self.refresh_all()
-        if self.auto_start.get():
-            self.start_timer_mode(self.timer_mode)
-
-    def _lock_after_work(self) -> None:
-        ok, detail = lock_screen()
-        if not ok:
-            messagebox.showerror(APP_NAME, "Work finished, but screen locking failed.\n\n" + detail, parent=self)
-
-    def _update_timer_labels(self) -> None:
-        if not hasattr(self, "timer_label"):
-            return
-        minutes, seconds = divmod(max(0, self.timer_remaining), 60)
-        self.timer_label.configure(text=f"{minutes:02d}:{seconds:02d}")
-        task_id = self.timer_task_id if self.timer_running or self.timer_task_id else self.selected_task_id
-        task = self.db.get_task(task_id) if task_id else None
-        mode = "WORK" if self.timer_mode == "work" else "BREAK"
-        self.timer_task_label.configure(text=f"{mode} · {task['title'] if task else 'No task selected'}")
-
-    def edit_selected_durations(self) -> None:
-        task_id = self.selected_task_id or self.timer_task_id
-        if task_id is not None:
-            task = self.db.get_task(task_id)
-            if not task:
-                return
-            dialog = DurationDialog(
-                self,
-                "Task timer durations",
-                int(task.get("task_work_minutes", 25)),
-                int(task.get("task_break_minutes", 5)),
-            )
-            self.wait_window(dialog)
-            if not dialog.result:
-                return
-            self.db.update_task(task_id, {"task_work_minutes": dialog.result[0], "task_break_minutes": dialog.result[1]})
-        else:
-            dialog = DurationDialog(
-                self,
-                "Default timer durations",
-                int(self.default_work_minutes.get()),
-                int(self.default_break_minutes.get()),
-            )
-            self.wait_window(dialog)
-            if not dialog.result:
-                return
-            self.default_work_minutes.set(dialog.result[0])
-            self.default_break_minutes.set(dialog.result[1])
-            self.save_settings()
-        if not self.timer_running:
-            self.timer_remaining = self._task_duration_seconds(self.timer_task_id, self.timer_mode)
-        self._save_timer_state()
-        self.refresh_all()
-
-    # ---------- Project folders ----------
-
-    def _build_projects_page(self, page: ttk.Frame) -> None:
-        page.columnconfigure(0, weight=1)
-        page.rowconfigure(1, weight=1)
-
-        header = ttk.Frame(page, padding=(18, 16, 18, 8))
-        header.grid(row=0, column=0, sticky="ew")
-        header.columnconfigure(0, weight=1)
-        self.project_page_title = tk.Label(
-            header,
-            text="Organize your tasks into projects",
-            background=self.theme["background"],
-            foreground="#ffffff",
-            font=("TkDefaultFont", 9),
-            anchor="w",
-        )
-        self.project_page_title.grid(row=0, column=0, sticky="w")
-        self.project_new_folder_button = ttk.Button(header, text="New folder", command=self.new_project_folder)
-        self.project_new_folder_button.grid(row=0, column=1, sticky="e")
-
-        # Folder browser: only coloured folder rectangles are shown here.
-        self.project_folder_browser = tk.Frame(page, background=self.theme["background"], padx=18, pady=8)
-        self.project_folder_browser.grid(row=1, column=0, sticky="nsew")
-        self.project_folder_browser.columnconfigure(0, weight=1)
-        self.project_folder_browser.rowconfigure(0, weight=1)
-        self.project_folder_canvas = tk.Canvas(
-            self.project_folder_browser, background=self.theme["background"], borderwidth=0, highlightthickness=0
-        )
-        folder_scroll = ttk.Scrollbar(
-            self.project_folder_browser, orient="vertical", command=self.project_folder_canvas.yview
-        )
-        self.project_folder_canvas.configure(yscrollcommand=folder_scroll.set)
-        self.project_folder_canvas.grid(row=0, column=0, sticky="nsew")
-        folder_scroll.grid(row=0, column=1, sticky="ns")
-        self.project_folder_grid = tk.Frame(self.project_folder_canvas, background=self.theme["background"])
-        self.project_folder_window = self.project_folder_canvas.create_window(
-            (0, 0), window=self.project_folder_grid, anchor="nw"
-        )
-        self.project_folder_grid.bind(
-            "<Configure>",
-            lambda _e: self.project_folder_canvas.configure(scrollregion=self.project_folder_canvas.bbox("all")),
-        )
-        self.project_folder_canvas.bind(
-            "<Configure>",
-            lambda e: self.project_folder_canvas.itemconfigure(self.project_folder_window, width=e.width),
-        )
-
-        # Open-folder view. It replaces the folder browser instead of appearing under it.
-        self.project_detail = tk.Frame(page, background=self.theme["background"], padx=18, pady=8)
-        self.project_detail.columnconfigure(0, weight=1)
-        self.project_detail.rowconfigure(2, weight=1)
-
-        detail_header = tk.Frame(self.project_detail, background=self.theme["background"])
-        detail_header.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        detail_header.columnconfigure(1, weight=1)
-        tk.Button(
-            detail_header, text="← Folders", command=self.close_project_folder,
-            background=self.theme["panel"], foreground=self.theme["text"],
-            activebackground=self.theme["hover"], activeforeground=self.theme["text"],
-            relief="flat", borderwidth=0, highlightthickness=0, padx=7, pady=3, cursor="hand2",
-        ).grid(row=0, column=0, padx=(0, 8))
-        self.project_selected_label = tk.Label(
-            detail_header, text="", background=self.theme["background"],
-            foreground=self.theme["text"], font=("TkDefaultFont", 14, "bold"), anchor="w",
-        )
-        self.project_selected_label.grid(row=0, column=1, sticky="w")
-        ttk.Button(detail_header, text="Add task", command=self.add_task_to_selected_folder).grid(row=0, column=2, padx=3)
-        ttk.Button(detail_header, text="Edit folder", command=self.edit_selected_project_folder).grid(row=0, column=3, padx=3)
-        ttk.Button(detail_header, text="Delete folder", command=self.delete_selected_project_folder).grid(row=0, column=4, padx=3)
-
-        self.project_folder_hint = tk.Label(
-            self.project_detail,
-            text="Folder tasks can stay unscheduled or also appear on any calendar day.",
-            background=self.theme["background"], foreground=self.theme["muted"], anchor="w",
-            font=("TkDefaultFont", 9),
-        )
-        self.project_folder_hint.grid(row=1, column=0, sticky="w", pady=(0, 8))
-
-        list_shell = tk.Frame(self.project_detail, background=self.theme["background"])
-        list_shell.grid(row=2, column=0, sticky="nsew")
-        list_shell.columnconfigure(0, weight=1)
-        list_shell.rowconfigure(0, weight=1)
-        self.project_task_canvas = tk.Canvas(
-            list_shell, background=self.theme["background"], borderwidth=0, highlightthickness=0, relief="flat"
-        )
-        project_scroll = ttk.Scrollbar(list_shell, orient="vertical", command=self.project_task_canvas.yview)
-        self.project_task_canvas.configure(yscrollcommand=project_scroll.set)
-        self.project_task_canvas.grid(row=0, column=0, sticky="nsew")
-        project_scroll.grid(row=0, column=1, sticky="ns")
-        self.project_task_inner = tk.Frame(self.project_task_canvas, background=self.theme["background"])
-        self.project_task_window = self.project_task_canvas.create_window(
-            (0, 0), window=self.project_task_inner, anchor="nw"
-        )
-        self.project_task_inner.bind(
-            "<Configure>", lambda _e: self.project_task_canvas.configure(scrollregion=self.project_task_canvas.bbox("all"))
-        )
-        self.project_task_canvas.bind(
-            "<Configure>", lambda e: self.project_task_canvas.itemconfigure(self.project_task_window, width=e.width)
-        )
-
-    def refresh_project_folders(self) -> None:
-        if not hasattr(self, "project_folder_grid"):
-            return
-        for child in self.project_folder_grid.winfo_children():
-            child.destroy()
-        folders = self.db.get_project_folders()
-        valid = {int(item["id"]) for item in folders}
-        if self.selected_project_folder_id not in valid:
-            self.selected_project_folder_id = None
-
-        if self.selected_project_folder_id is None:
-            self.project_detail.grid_remove()
-            self.project_folder_browser.grid(row=1, column=0, sticky="nsew")
-            self.project_page_title.configure(text="Organize your tasks into projects")
-            self.project_new_folder_button.grid()
-            if not folders:
-                tk.Label(
-                    self.project_folder_grid, text="No project folders yet.",
-                    background=self.theme["background"], foreground=self.theme["muted"],
-                    anchor="w", pady=14,
-                ).grid(row=0, column=0, sticky="w")
-                return
-            columns = 4
-            for column in range(columns):
-                self.project_folder_grid.columnconfigure(column, weight=1, uniform="folders")
-            for index, folder in enumerate(folders):
-                folder_id = int(folder["id"])
-                color = str(folder.get("color") or "#526d82")
-                button = tk.Button(
-                    self.project_folder_grid,
-                    text=str(folder["name"]),
-                    command=lambda item=folder_id: self.select_project_folder(item),
-                    background=color, foreground="#ffffff",
-                    activebackground=color, activeforeground="#ffffff",
-                    font=("TkDefaultFont", 12, "bold"),
-                    relief="flat", borderwidth=0, highlightthickness=0,
-                    width=21, height=5, wraplength=165, justify="center", cursor="hand2",
-                )
-                row, column = divmod(index, columns)
-                button.grid(row=row, column=column, sticky="nsew", padx=8, pady=8)
-            return
-
-        self.project_folder_browser.grid_remove()
-        self.project_detail.grid(row=1, column=0, sticky="nsew")
-        self.project_new_folder_button.grid_remove()
-        self.refresh_project_folder_tasks()
-
-    def select_project_folder(self, folder_id: int) -> None:
-        self.selected_project_folder_id = int(folder_id)
-        self.refresh_project_folders()
-
-    def close_project_folder(self) -> None:
-        self.selected_project_folder_id = None
-        self.refresh_project_folders()
-
-    def new_project_folder(self) -> None:
-        dialog = ProjectFolderDialog(self)
-        self.wait_window(dialog)
-        if not dialog.result:
-            return
-        try:
-            self.db.create_project_folder(*dialog.result)
-        except Exception as exc:
-            messagebox.showerror(APP_NAME, str(exc), parent=self)
-            return
-        self.selected_project_folder_id = None
-        self.refresh_project_folders()
-
-    def edit_selected_project_folder(self) -> None:
-        if self.selected_project_folder_id is None:
-            return
-        folder = self.db.get_project_folder(self.selected_project_folder_id)
-        if not folder:
-            return
-        dialog = ProjectFolderDialog(self, folder)
-        self.wait_window(dialog)
-        if not dialog.result:
-            return
-        try:
-            self.db.update_project_folder(self.selected_project_folder_id, *dialog.result)
-        except Exception as exc:
-            messagebox.showerror(APP_NAME, str(exc), parent=self)
-            return
-        self.refresh_project_folders()
-
-    def delete_selected_project_folder(self) -> None:
-        if self.selected_project_folder_id is None:
-            return
-        folder = self.db.get_project_folder(self.selected_project_folder_id)
-        if not folder:
-            return
-        if not messagebox.askyesno(
-            "Delete folder",
-            f"Delete project folder '{folder['name']}'? Tasks are kept and only lose the folder assignment.",
-            parent=self,
-        ):
-            return
-        self.db.delete_project_folder(self.selected_project_folder_id)
-        self.selected_project_folder_id = None
-        self.refresh_all()
-
-    def add_task_to_selected_folder(self) -> None:
-        if self.selected_project_folder_id is None:
-            return
-        dialog = TaskDialog(self, default_folder_id=self.selected_project_folder_id)
-        self.wait_window(dialog)
-        if not dialog.result:
-            return
-        # Tasks created from a project folder start without a calendar date.
-        values = dialog.result["values"] | {"deadline": None}
-        task_id = self.db.create_task(values)
-        self.db.set_exceptions(task_id, dialog.result["exceptions"])
-        self.db.replace_subtasks(task_id, dialog.result["subtasks"])
-        self.refresh_all()
-
-    def refresh_project_folder_tasks(self) -> None:
-        if not hasattr(self, "project_task_inner"):
-            return
-        for child in self.project_task_inner.winfo_children():
-            child.destroy()
-        folder_id = self.selected_project_folder_id
-        folder = self.db.get_project_folder(folder_id) if folder_id is not None else None
-        if not folder:
-            return
-        self.project_selected_label.configure(text=str(folder["name"]))
-        tasks = self.db.tasks_for_folder(folder_id)
-
-        for column, priority in enumerate(("P1", "P2", "P3", "P4")):
-            self.project_task_inner.columnconfigure(column, weight=1, uniform="project_priority")
-            lane = tk.Frame(
-                self.project_task_inner, background=self.theme["background"], borderwidth=0,
-                highlightthickness=0, padx=4,
-            )
-            lane.grid(row=0, column=column, sticky="nsew")
-            tk.Label(
-                lane, text=PRIORITY_LABELS[priority], background=self.theme["background"],
-                foreground=self.theme[priority], font=("TkDefaultFont", 10, "bold"), anchor="w",
-            ).pack(fill="x", pady=(0, 8))
-            lane_tasks = [task for task in tasks if str(task.get("priority", "P4")) == priority]
-            if not lane_tasks:
-                tk.Label(
-                    lane, text="No tasks", background=self.theme["background"],
-                    foreground=self.theme["muted"], anchor="w", font=("TkDefaultFont", 9),
-                ).pack(fill="x", pady=(4, 0))
-                continue
-            for task in lane_tasks:
-                self._build_project_task_card(task, lane)
-
-    def _build_project_task_card(self, task: Mapping[str, Any], parent: tk.Widget) -> None:
-        task_id = int(task["id"])
-        priority = str(task.get("priority", "P4"))
-        background = self.theme.get(priority, self.theme["field"])
-        foreground = contrast_text(background)
-        done = bool(task.get("status") == "completed")
-        card = tk.Frame(parent, background=background, borderwidth=0, highlightthickness=0)
-        card.pack(fill="x", pady=(0, 5))
-        row = tk.Frame(card, background=background, padx=4, pady=2)
-        row.pack(fill="x")
-        row.columnconfigure(1, weight=1)
-        tk.Button(
-            row, text="●" if done else "○", command=lambda item=task_id: self.toggle_task_done(item),
-            background=background, foreground=foreground, activebackground=background, activeforeground=foreground,
-            relief="flat", borderwidth=0, highlightthickness=0, font=("TkDefaultFont", 14, "bold"),
-            padx=2, pady=0, cursor="hand2",
-        ).grid(row=0, column=0, sticky="n")
-        title_font = tkfont.Font(font=("TkDefaultFont", 9, "bold"))
-        title_font.configure(overstrike=done)
-        self.task_fonts.append(title_font)
-        title = tk.Label(
-            row, text=" ".join(str(task["title"]).split()), background=background, foreground=foreground,
-            font=title_font, anchor="w", justify="left", wraplength=200, cursor="xterm", padx=2, pady=1,
-        )
-        title.grid(row=0, column=1, sticky="ew")
-        title.bind("<Double-1>", lambda _event, item=task_id: self.edit_task(item))
-        schedule = (
-            f"Recurring · {task.get('recurrence_start') or 'unscheduled'}"
-            if task.get("recurrence_enabled")
-            else (task.get("deadline") or "Unscheduled")
-        )
-        tk.Label(
-            row, text=schedule, background=background, foreground=foreground,
-            font=("TkDefaultFont", 8), anchor="w",
-        ).grid(row=1, column=1, sticky="w")
-        tools = tk.Frame(card, background=background)
-        tools.pack(fill="x", padx=4, pady=(0, 2))
-        for text, command in (
-            ("Date", lambda item=task_id: self.move_task_dialog(item)),
-            ("Edit", lambda item=task_id: self.edit_task(item)),
-            ("Delete", lambda item=task_id: self.delete_task_permanently(item)),
-        ):
-            tk.Button(
-                tools, text=text, command=command, background=background, foreground=foreground,
-                activebackground=background, activeforeground=foreground, relief="flat", borderwidth=0,
-                highlightthickness=0, padx=3, pady=0, font=("TkDefaultFont", 8), cursor="hand2",
-            ).pack(side="left", padx=(0, 2))
-
-    def schedule_folder_task_today(self, task_id: int) -> None:
-        task = self.db.get_task(task_id)
-        if not task:
-            return
-        if task.get("recurrence_enabled"):
-            self.db.update_task(task_id, {"recurrence_start": date.today().isoformat()})
-        else:
-            self.db.update_task(task_id, {"deadline": date.today().isoformat()})
-        self.refresh_all()
-
-    def remove_task_from_folder(self, task_id: int) -> None:
-        self.db.assign_task_folder(task_id, None)
-        self.refresh_all()
-
-    # ---------- Clock in/out ----------
-
-    def _load_clock_state(self) -> dict[str, Any]:
-        state = self.db.get_setting("clock_state", {})
-        if not isinstance(state, dict):
-            state = {}
-        return {
-            "clocked_in": bool(state.get("clocked_in", False)),
-            "start_at": state.get("start_at"),
-        }
-
-    def _save_clock_state(self) -> None:
-        self.db.set_setting("clock_state", self.clock_state)
-
-    def toggle_clock(self) -> None:
-        if self.clock_state.get("clocked_in"):
-            self.clock_out()
-        else:
-            self.clock_in()
-
-    def clock_in(self) -> None:
-        self.clock_state = {
-            "clocked_in": True,
-            "start_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        }
-        self._save_clock_state()
-        self._refresh_clock_button()
-        self.refresh_calendar()
-
-    def clock_out(self) -> None:
-        start_text = self.clock_state.get("start_at")
-        try:
-            start = datetime.fromisoformat(start_text) if start_text else None
-        except ValueError:
-            start = None
-        end = datetime.now().astimezone()
-        if start and end > start:
-            cursor = start
-            while cursor.date() < end.date():
-                boundary = datetime.combine(cursor.date() + timedelta(days=1), datetime.min.time(), tzinfo=cursor.tzinfo)
-                seconds = max(0, int((boundary - cursor).total_seconds()))
-                self.db.add_work_session(cursor.date().isoformat(), cursor.isoformat(timespec="seconds"), boundary.isoformat(timespec="seconds"), seconds)
-                cursor = boundary
-            seconds = max(0, int((end - cursor).total_seconds()))
-            if seconds:
-                self.db.add_work_session(cursor.date().isoformat(), cursor.isoformat(timespec="seconds"), end.isoformat(timespec="seconds"), seconds)
-        self.clock_state = {"clocked_in": False, "start_at": None}
-        self._save_clock_state()
-        self._refresh_clock_button()
-        self.refresh_all()
-
-    def _live_clock_seconds_today(self) -> int:
-        if not self.clock_state.get("clocked_in"):
-            return 0
-        start_text = self.clock_state.get("start_at")
-        try:
-            start = datetime.fromisoformat(start_text) if start_text else None
-        except ValueError:
-            return 0
-        now = datetime.now().astimezone()
-        if not start:
-            return 0
-        today_start = datetime.combine(now.date(), datetime.min.time(), tzinfo=now.tzinfo)
-        effective = max(start, today_start)
-        return max(0, int((now - effective).total_seconds()))
-
-    def _refresh_clock_button(self) -> None:
-        if not hasattr(self, "clock_button"):
-            return
-        if self.clock_state.get("clocked_in"):
-            self.clock_button.configure(
-                text="Clock out", background="#4ade80", activebackground="#22c55e", foreground="#10351f"
-            )
-        else:
-            self.clock_button.configure(
-                text="Clock in", background="#86efac", activebackground="#6ee7a0", foreground="#10351f"
-            )
-
-    # ---------- Calendar ----------
-
-    def _build_calendar_page(self, page: ttk.Frame) -> None:
-        page.columnconfigure(0, weight=1)
-        page.rowconfigure(1, weight=1)
-        toolbar = ttk.Frame(page, padding=(18, 14, 18, 8))
-        toolbar.grid(row=0, column=0, sticky="ew")
-        toolbar.columnconfigure(3, weight=1)
-        ttk.Button(toolbar, text="‹", command=lambda: self.change_month(-1)).grid(row=0, column=0, padx=3)
-        ttk.Button(toolbar, text="Today", command=self.calendar_today).grid(row=0, column=1, padx=3)
-        ttk.Button(toolbar, text="Adjust clocked total", command=self.adjust_selected_day_total).grid(row=0, column=2, padx=3)
-        self.calendar_title = ttk.Label(toolbar, text="", font=("TkDefaultFont", 16, "bold"), anchor="center")
-        self.calendar_title.grid(row=0, column=3, sticky="ew")
-        ttk.Button(toolbar, text="›", command=lambda: self.change_month(1)).grid(row=0, column=4, padx=3)
-
-        body = ttk.Frame(page, padding=(18, 0, 18, 18))
-        body.grid(row=1, column=0, sticky="nsew")
-        body.columnconfigure(0, weight=3)
-        body.columnconfigure(1, weight=2)
-        body.rowconfigure(0, weight=1)
-        self.calendar_grid = tk.Frame(body, background=self.theme["background"])
-        self.calendar_grid.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
-        detail = ttk.LabelFrame(body, text="Selected day", padding=12)
-        detail.grid(row=0, column=1, sticky="nsew")
-        detail.columnconfigure(0, weight=1)
-        detail.rowconfigure(4, weight=1)
-        self.calendar_selected_label = ttk.Label(detail, text="", font=("TkDefaultFont", 13, "bold"))
-        self.calendar_selected_label.grid(row=0, column=0, sticky="w")
-        self.calendar_work_label = ttk.Label(detail, text="")
-        self.calendar_work_label.grid(row=1, column=0, sticky="w", pady=(8, 2))
-        self.calendar_pomo_label = ttk.Label(detail, text="")
-        self.calendar_pomo_label.grid(row=2, column=0, sticky="w", pady=2)
-        ttk.Button(detail, text="Add task", command=self.add_task_to_selected_calendar_day).grid(row=3, column=0, sticky="w", pady=(8, 10))
-
-        calendar_list_shell = tk.Frame(detail, background=self.theme["background"])
-        calendar_list_shell.grid(row=4, column=0, sticky="nsew")
-        calendar_list_shell.columnconfigure(0, weight=1)
-        calendar_list_shell.rowconfigure(0, weight=1)
-        self.calendar_task_canvas = tk.Canvas(
-            calendar_list_shell, background=self.theme["field"], borderwidth=0, highlightthickness=0, relief="flat"
-        )
-        calendar_scroll = ttk.Scrollbar(calendar_list_shell, orient="vertical", command=self.calendar_task_canvas.yview)
-        self.calendar_task_canvas.configure(yscrollcommand=calendar_scroll.set)
-        self.calendar_task_canvas.grid(row=0, column=0, sticky="nsew")
-        calendar_scroll.grid(row=0, column=1, sticky="ns")
-        self.calendar_task_inner = tk.Frame(self.calendar_task_canvas, background=self.theme["field"])
-        self.calendar_task_window = self.calendar_task_canvas.create_window((0, 0), window=self.calendar_task_inner, anchor="nw")
-        self.calendar_task_inner.bind(
-            "<Configure>", lambda _e: self.calendar_task_canvas.configure(scrollregion=self.calendar_task_canvas.bbox("all"))
-        )
-        self.calendar_task_canvas.bind(
-            "<Configure>", lambda e: self.calendar_task_canvas.itemconfigure(self.calendar_task_window, width=e.width)
-        )
-
-    def refresh_calendar(self) -> None:
-        if not hasattr(self, "calendar_grid"):
-            return
-        for child in self.calendar_grid.winfo_children():
-            child.destroy()
-        year, month = self.calendar_month.year, self.calendar_month.month
-        self.calendar_title.configure(text=self.calendar_month.strftime("%B %Y"))
-        last_day = calendar.monthrange(year, month)[1]
-        start = date(year, month, 1)
-        end = date(year, month, last_day)
-        tasks_by_day = self.db.calendar_tasks_for_range(start, end)
-        work = self.db.work_totals(start, end)
-        if start <= date.today() <= end:
-            work[date.today().isoformat()] = work.get(date.today().isoformat(), 0) + self._live_clock_seconds_today()
-        pomodoro = self.db.pomodoro_totals(start, end)
-        for column, name in enumerate(("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")):
-            self.calendar_grid.columnconfigure(column, weight=1)
-            tk.Label(
-                self.calendar_grid,
-                text=name,
-                background=self.theme["panel"],
-                foreground=self.theme["text"],
-                pady=5,
-            ).grid(row=0, column=column, sticky="ew", padx=1, pady=1)
-        weeks = calendar.Calendar(firstweekday=0).monthdatescalendar(year, month)
-        for row_index, week in enumerate(weeks, start=1):
-            self.calendar_grid.rowconfigure(row_index, weight=1)
-            for column, day in enumerate(week):
-                day_iso = day.isoformat()
-                selected = day == self.selected_calendar_date
-                in_month = day.month == month
-                bg = self.theme["accent"] if selected else self.theme["field"]
-                fg = self.theme["text"] if in_month else self.theme["muted"]
-                cell = tk.Frame(
-                    self.calendar_grid,
-                    background=bg,
-                    highlightthickness=1,
-                    highlightbackground=self.theme["panel"],
-                    cursor="hand2",
-                )
-                cell.grid(row=row_index, column=column, sticky="nsew", padx=1, pady=1)
-                number = tk.Label(cell, text=str(day.day), background=bg, foreground=fg, font=("TkDefaultFont", 10, "bold"), anchor="w")
-                number.pack(fill="x", padx=6, pady=(4, 0))
-                totals = tk.Label(
-                    cell,
-                    text=f"W {format_duration(work.get(day_iso, 0))}\nP {format_duration(pomodoro.get(day_iso, 0))}",
-                    justify="left",
-                    background=bg,
-                    foreground=fg,
-                    anchor="w",
-                )
-                totals.pack(fill="x", padx=6, pady=(2, 0))
-                day_tasks = tasks_by_day.get(day_iso, [])
-                done_count = sum(1 for item in day_tasks if item.get("occurrence_completed"))
-                count_label = tk.Label(
-                    cell,
-                    text=f"{done_count}/{len(day_tasks)} done" if day_tasks else "",
-                    background=bg,
-                    foreground=fg,
-                    anchor="w",
-                )
-                count_label.pack(fill="x", padx=6, pady=(2, 5))
-
-                def choose(_event: tk.Event | None = None, selected_day: date = day) -> None:
-                    self.selected_calendar_date = selected_day
-                    self.refresh_calendar()
-
-                for widget in (cell, number, totals, count_label):
-                    widget.bind("<Button-1>", choose)
-        self._refresh_calendar_detail(tasks_by_day, work, pomodoro)
-
-    def _refresh_calendar_detail(self, tasks_by_day, work, pomodoro) -> None:
-        day_iso = self.selected_calendar_date.isoformat()
-        self.calendar_selected_label.configure(text=self.selected_calendar_date.strftime("%A, %d %B %Y"))
-        work_seconds = work.get(day_iso, self.db.work_seconds(day_iso))
-        if self.selected_calendar_date == date.today():
-            work_seconds = self.db.work_seconds(day_iso) + self._live_clock_seconds_today()
-        self.calendar_work_label.configure(text=f"Clocked work: {format_duration(work_seconds)}")
-        self.calendar_pomo_label.configure(text=f"Task timer work: {format_duration(pomodoro.get(day_iso, 0))}")
-        tasks = tasks_by_day.get(day_iso)
-        if tasks is None:
-            tasks = self.db.calendar_tasks_for_range(self.selected_calendar_date, self.selected_calendar_date).get(day_iso, [])
-
-        for child in self.calendar_task_inner.winfo_children():
-            child.destroy()
-        if not tasks:
-            tk.Label(
-                self.calendar_task_inner, text="No tasks scheduled", background=self.theme["field"],
-                foreground=self.theme["muted"], anchor="w", padx=10, pady=10,
-            ).pack(fill="x")
-            return
-
-        for task in tasks:
-            task_id = int(task["id"])
-            done = bool(task.get("occurrence_completed"))
-            row = tk.Frame(self.calendar_task_inner, background=self.theme["field"], padx=8, pady=6)
-            row.pack(fill="x", pady=(0, 1))
-            row.columnconfigure(0, weight=1)
-            font = tkfont.Font(font=("TkDefaultFont", 10))
-            font.configure(overstrike=done)
-            self.task_fonts.append(font)
-            folder = self.db.get_project_folder(int(task["folder_id"])) if task.get("folder_id") else None
-            label_text = str(task["title"])
-            if folder:
-                label_text += f"  ·  {folder['name']}"
-            tk.Label(
-                row, text=label_text, background=self.theme["field"],
-                foreground=self.theme["muted"] if done else self.theme["text"],
-                font=font, anchor="w", justify="left", wraplength=300,
-            ).grid(row=0, column=0, sticky="ew")
-            tk.Button(
-                row, text="Folder", command=lambda item=task_id: self.assign_calendar_task_folder(item),
-                background=self.theme["panel"], foreground=self.theme["text"],
-                activebackground=self.theme["hover"], activeforeground=self.theme["text"],
-                relief="flat", borderwidth=0, padx=5, pady=2, cursor="hand2",
-            ).grid(row=0, column=1, padx=(6, 2))
-            tk.Button(
-                row, text="Edit", command=lambda item=task_id: self.edit_task(item),
-                background=self.theme["panel"], foreground=self.theme["text"],
-                activebackground=self.theme["hover"], activeforeground=self.theme["text"],
-                relief="flat", borderwidth=0, padx=5, pady=2, cursor="hand2",
-            ).grid(row=0, column=2, padx=(2, 0))
-
-    def add_task_to_selected_calendar_day(self) -> None:
-        dialog = TaskDialog(self, default_deadline=self.selected_calendar_date.isoformat())
-        self.wait_window(dialog)
-        if not dialog.result:
-            return
-        task_id = self.db.create_task(dialog.result["values"])
-        self.db.set_exceptions(task_id, dialog.result["exceptions"])
-        self.db.replace_subtasks(task_id, dialog.result["subtasks"])
-        self.selected_task_id = task_id
-        self.refresh_all()
-
-    def assign_calendar_task_folder(self, task_id: int) -> None:
-        task = self.db.get_task(task_id)
-        if not task:
-            return
-        dialog = FolderPickerDialog(self, int(task.get("folder_id") or 0) or None)
-        self.wait_window(dialog)
-        if dialog.result is _NO_RESULT:
-            return
-        # Only folder_id changes here: the calendar date remains untouched.
-        self.db.assign_task_folder(task_id, dialog.result)
-        self.refresh_all()
-
-    def change_month(self, amount: int) -> None:
-        index = self.calendar_month.year * 12 + self.calendar_month.month - 1 + amount
-        self.calendar_month = date(index // 12, index % 12 + 1, 1)
-        self.refresh_calendar()
-
-    def calendar_today(self) -> None:
-        self.calendar_month = date.today().replace(day=1)
-        self.selected_calendar_date = date.today()
-        self.refresh_calendar()
-
-    def adjust_selected_day_total(self) -> None:
-        day = self.selected_calendar_date.isoformat()
-        current = self.db.work_seconds(day) + (self._live_clock_seconds_today() if self.selected_calendar_date == date.today() else 0)
-        TotalTimeDialog(self, f"Clocked total — {day}", current, lambda seconds: self._set_day_total(day, seconds))
-
-    def _set_day_total(self, day: str, seconds: int) -> None:
-        live = self._live_clock_seconds_today() if day == date.today().isoformat() else 0
-        self.db.set_daily_total(day, max(0, seconds - live))
-        self.refresh_all()
-
-    # ---------- History ----------
-
-    def _build_history_page(self, page: ttk.Frame) -> None:
-        page.columnconfigure(0, weight=1)
-        page.rowconfigure(1, weight=1)
-        filters = ttk.Frame(page, padding=(18, 14, 18, 8))
-        filters.grid(row=0, column=0, sticky="ew")
-        filters.columnconfigure(0, weight=1)
-        self.history_search_var = tk.StringVar()
-        self.history_status_var = tk.StringVar(value="all")
-        self.history_search_var.trace_add("write", lambda *_args: self.after_idle(self.refresh_history))
-        self.history_status_var.trace_add("write", lambda *_args: self.after_idle(self.refresh_history))
-        search = ttk.Entry(filters, textvariable=self.history_search_var)
-        search.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        search.bind("<Return>", lambda _event: self.refresh_history())
-        self.history_status_combo = ttk.Combobox(
-            filters,
-            textvariable=self.history_status_var,
-            values=("all", "active", "completed", "archived"),
-            state="readonly",
-            width=12,
-        )
-        self.history_status_combo.grid(row=0, column=1, padx=4)
-        self.history_status_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_history())
-        ttk.Button(filters, text="Search", command=self.refresh_history).grid(row=0, column=2, padx=4)
-
-        table_frame = ttk.Frame(page, padding=(18, 0, 18, 8))
-        table_frame.grid(row=1, column=0, sticky="nsew")
-        table_frame.columnconfigure(0, weight=1)
-        table_frame.rowconfigure(0, weight=1)
-        columns = ("date", "status", "priority", "task", "timers", "manual", "pomodoros")
-        self.history_tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
-        headings = {
-            "date": "Date",
-            "status": "Status",
-            "priority": "Priority",
-            "task": "Task",
-            "timers": "Work / break",
-            "manual": "Manual time",
-            "pomodoros": "Pomodoros",
-        }
-        widths = {"date": 125, "status": 95, "priority": 75, "task": 360, "timers": 110, "manual": 100, "pomodoros": 100}
-        for column in columns:
-            self.history_tree.heading(column, text=headings[column])
-            self.history_tree.column(column, width=widths[column], anchor="w")
-        scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.history_tree.yview)
-        self.history_tree.configure(yscrollcommand=scrollbar.set)
-        self.history_tree.grid(row=0, column=0, sticky="nsew")
-        scrollbar.grid(row=0, column=1, sticky="ns")
-        self.history_tree.bind("<Double-1>", lambda _event: self.edit_history_task())
-        actions = ttk.Frame(page, padding=(18, 0, 18, 18))
-        actions.grid(row=2, column=0, sticky="ew")
-        ttk.Button(actions, text="Edit", command=self.edit_history_task).grid(row=0, column=0, padx=(0, 5))
-        ttk.Button(actions, text="Restore / reopen", command=self.restore_history_task).grid(row=0, column=1, padx=5)
-        ttk.Button(actions, text="Archive", command=self.archive_history_task).grid(row=0, column=2, padx=5)
-
-    def refresh_history(self) -> None:
-        if not hasattr(self, "history_tree"):
-            return
-        for item in self.history_tree.get_children():
-            self.history_tree.delete(item)
-        self.history_records = {}
-        records = self.db.search_history(
-            search=self.history_search_var.get(),
-            status=self.history_status_var.get(),
-        )
-        for index, record in enumerate(records):
-            iid = f"r{index}"
-            display_date = record.get("occurrence_date") or str(record.get("updated_at") or record.get("created_at") or "")[:10]
-            status = record.get("status", "")
-            timers = f"{record.get('task_work_minutes', 25)} / {record.get('task_break_minutes', 5)}"
-            pomos = f"{record.get('pomodoro_completed', 0)}/{record.get('pomodoro_estimate', 0)}"
-            self.history_tree.insert(
-                "",
-                "end",
-                iid=iid,
-                values=(
-                    display_date,
-                    status,
-                    record.get("priority", "P4"),
-                    record.get("title", ""),
-                    timers,
-                    format_duration(int(record.get("manual_seconds", 0) or 0)),
-                    pomos,
-                ),
-            )
-            self.history_records[iid] = record
-
-    def _selected_history_record(self) -> dict[str, Any] | None:
-        selection = self.history_tree.selection()
-        return self.history_records.get(selection[0]) if selection else None
-
-    def edit_history_task(self) -> None:
-        record = self._selected_history_record()
-        if record:
-            self.edit_task(int(record["id"]))
-
-    def restore_history_task(self) -> None:
-        record = self._selected_history_record()
-        if not record:
-            return
-        task_id = int(record["id"])
-        if record.get("record_type") == "occurrence" and record.get("occurrence_date"):
-            self.db.reopen_task(task_id, date.fromisoformat(record["occurrence_date"]))
-        else:
-            self.db.restore_task(task_id)
-        self.refresh_all()
-
-    def archive_history_task(self) -> None:
-        record = self._selected_history_record()
-        if record:
-            self.db.archive_task(int(record["id"]))
-            self.refresh_all()
-
-    # ---------- Graveyards ----------
-
-    def _selected_graveyard_font(self) -> str:
-        """Restore a valid Graveyard font selection."""
-        saved = str(self.db.get_setting("graveyard_font", "") or "").strip()
-        if saved in GRAVEYARD_FONT_CHOICES:
-            return saved
-        return GRAVEYARD_FONT_CHOICES[0]
-
-    def _resolve_mighty_font_family(self) -> str:
-        """Return the actual installed family name for the bundled Mighty font."""
-        try:
-            available = {
-                str(family).strip().casefold(): str(family).strip()
-                for family in tkfont.families(self)
-                if str(family).strip()
-            }
-        except tk.TclError:
-            available = {}
-
-        if MIGHTY_FONT_FILE.exists() and shutil.which("fc-scan"):
-            try:
-                result = subprocess.run(
-                    ["fc-scan", "--format=%{family}\\n", str(MIGHTY_FONT_FILE)],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                    check=False,
-                )
-                for line in result.stdout.splitlines():
-                    for candidate in line.split(","):
-                        candidate = candidate.strip()
-                        match = available.get(candidate.casefold())
-                        if match:
-                            return match
-            except (OSError, subprocess.SubprocessError):
-                pass
-
-        for key, family in available.items():
-            if "mighty" in key:
-                return family
-
-        return "Mighty"
-
-    def _resolve_bundled_font_family(self, font_file: Path, fallback: str) -> str:
-        """Resolve a bundled TTF family name."""
-        if font_file.exists() and shutil.which("fc-scan"):
-            try:
-                result = subprocess.run(
-                    ["fc-scan", "--format=%{family}\\n", str(font_file)],
-                    capture_output=True, text=True, timeout=5, check=False,
-                )
-                for line in result.stdout.splitlines():
-                    if line.strip():
-                        return line.split(",")[0].strip()
-            except (OSError, subprocess.SubprocessError):
-                pass
-        return fallback
-
-    def _graveyard_font_spec(self, requested: str, size: int) -> tuple:
-        """Return a font spec that works for Mighty, Tk named fonts and normal families."""
-        if requested == "Mighty":
-            return (self._resolve_mighty_font_family(), size)
-        if requested == "Head":
-            return (self._resolve_bundled_font_family(HEAD_FONT_FILE, "Head"), size)
-        if requested == "Flighty":
-            return (self._resolve_bundled_font_family(FLIGHTY_FONT_FILE, "Flighty"), size)
-
-        try:
-            named_fonts = set(tkfont.names(self))
-        except tk.TclError:
-            named_fonts = set()
-
-        # Tk named fonts such as TkDefaultFont and TkFixedFont are aliases.
-        # Copy their real family/style, then apply the Graveyard's chosen size.
-        if requested in named_fonts:
-            try:
-                actual = tkfont.nametofont(requested, root=self).actual()
-                family = str(actual.get("family") or "TkDefaultFont")
-                styles: list[str] = []
-
-                if str(actual.get("weight", "normal")) == "bold":
-                    styles.append("bold")
-                if str(actual.get("slant", "roman")) == "italic":
-                    styles.append("italic")
-                if int(actual.get("underline", 0) or 0):
-                    styles.append("underline")
-                if int(actual.get("overstrike", 0) or 0):
-                    styles.append("overstrike")
-
-                return (family, size, *styles)
-            except (tk.TclError, TypeError, ValueError):
-                pass
-
-        # Helvetica, Times and Courier are traditional Tk family requests.
-        # Tk/fontconfig resolves them to an available sans, serif or monospace font.
-        # Normal installed font families render here as usual.
-        return (requested, size)
-
-    def _apply_graveyard_font(self, *, persist: bool = False) -> None:
-        """Apply the selected font to both the preview and Graveyard editor."""
-        if not hasattr(self, "graveyard_font_var"):
-            return
-
-        requested = self.graveyard_font_var.get().strip()
-        if requested not in GRAVEYARD_FONT_CHOICES:
-            requested = GRAVEYARD_FONT_CHOICES[0]
-            self.graveyard_font_var.set(requested)
-
-        preview_font = self._graveyard_font_spec(
-            requested, GRAVEYARD_FONT_PREVIEW_SIZE
-        )
-        text_size = (
-            MIGHTY_FONT_SIZE if requested == "Mighty"
-            else HEAD_FONT_SIZE if requested == "Head"
-            else FLIGHTY_FONT_SIZE if requested == "Flighty"
-            else GRAVEYARD_FONT_SIZE
-        )
-        text_font = self._graveyard_font_spec(
-            requested, text_size
-        )
-
-        self.graveyard_font_family = requested
-
-        if persist:
-            self.db.set_setting("graveyard_font", requested)
-
-        if hasattr(self, "graveyard_font_preview") and self.graveyard_font_preview.winfo_exists():
-            self.graveyard_font_preview.configure(font=preview_font)
-
-        if hasattr(self, "graveyard_text") and self.graveyard_text.winfo_exists():
-            self.graveyard_text.configure(font=text_font)
-            self.graveyard_text.tag_add(
-                "graveyard_body",
-                "1.0",
-                "end",
-            )
-            self.graveyard_text.update_idletasks()
-            self.after_idle(self._redraw_graveyard_rules)
-
-    def _preview_graveyard_font(self, _event: tk.Event | None = None) -> None:
-        self._apply_graveyard_font(persist=False)
-
-    def _build_graveyards_page(self, page: ttk.Frame) -> None:
-        """Build Graveyards as one real multiline notepad instead of per-line Entry widgets."""
-        page.columnconfigure(0, weight=1)
-        page.rowconfigure(0, weight=1)
-
-        paper = self.theme["note_paper"]
-        ink = self.theme["graveyard_text"]
-        requested_font = self._selected_graveyard_font()
-        self.graveyard_font_family = requested_font
-        graveyard_text_size = (
-            MIGHTY_FONT_SIZE if requested_font == "Mighty"
-            else HEAD_FONT_SIZE if requested_font == "Head"
-            else FLIGHTY_FONT_SIZE if requested_font == "Flighty"
-            else GRAVEYARD_FONT_SIZE
-        )
-        graveyard_font_spec = self._graveyard_font_spec(
-            requested_font, graveyard_text_size
-        )
-        self.graveyard_save_job: str | None = None
-
-        notebook = tk.Frame(page, background=paper, borderwidth=0, highlightthickness=0)
-        notebook.grid(row=0, column=0, sticky="nsew", padx=18, pady=18)
-        notebook.columnconfigure(0, weight=1)
-        notebook.rowconfigure(2, weight=1)
-
-        heading = tk.Frame(notebook, background=paper, borderwidth=0, highlightthickness=0)
-        heading.grid(row=0, column=0, sticky="ew")
-        heading.columnconfigure(0, weight=1)
-        tk.Label(
-            heading,
-            text="Graveyard of untimed tasks and ideas to do in the never-coming future.",
-            background=paper,
-            foreground=ink,
-            font=("TkDefaultFont", 9, "italic"),
-            anchor="w",
-            justify="left",
-            padx=18,
-            pady=10,
-        ).grid(row=0, column=0, sticky="ew")
-        self.graveyard_status = tk.Label(
-            heading,
-            text="Autosaved",
-            background=paper,
-            foreground=ink,
-            font=("TkDefaultFont", 8),
-            anchor="e",
-            padx=18,
-        )
-        self.graveyard_status.grid(row=0, column=1, sticky="e")
-
-        toolbar = tk.Frame(notebook, background=paper, borderwidth=0, highlightthickness=0, padx=14, pady=4)
-        toolbar.grid(row=1, column=0, sticky="ew")
-        for label, command in (
-            ("Undo", self._graveyard_undo),
-            ("Redo", self._graveyard_redo),
-            ("Cut", lambda: self._graveyard_virtual_event("<<Cut>>")),
-            ("Copy", lambda: self._graveyard_virtual_event("<<Copy>>")),
-            ("Paste", lambda: self._graveyard_virtual_event("<<Paste>>")),
-            ("Select all", self._graveyard_select_all),
-            ("Save", self.save_graveyard_notes),
-        ):
-            tk.Button(
-                toolbar,
-                text=label,
-                command=command,
-                background=paper,
-                foreground=ink,
-                activebackground=paper,
-                activeforeground=ink,
-                relief="flat",
-                borderwidth=0,
-                highlightthickness=0,
-                padx=7,
-                pady=3,
-                cursor="hand2",
-            ).pack(side="left", padx=(0, 2))
-
-        editor_shell = tk.Frame(notebook, background=paper, borderwidth=0, highlightthickness=0)
-        editor_shell.grid(row=2, column=0, sticky="nsew")
-        editor_shell.columnconfigure(0, weight=1)
-        editor_shell.rowconfigure(0, weight=1)
-
-        self.graveyard_text = tk.Text(
-            editor_shell,
-            wrap="word",
-            undo=True,
-            autoseparators=True,
-            maxundo=-1,
-            background=paper,
-            foreground=ink,
-            insertbackground=ink,
-            selectbackground=self.theme["accent"],
-            selectforeground=self.theme["text"],
-            relief="flat",
-            borderwidth=0,
-            highlightthickness=0,
-            font=graveyard_font_spec,
-            padx=GRAVEYARD_TEXT_LEFT,
-            pady=18,
-            spacing1=0,
-            spacing2=GRAVEYARD_LINE_GAP,
-            spacing3=GRAVEYARD_LINE_GAP,
-            tabs=("32p",),
-        )
-        self.graveyard_text.tag_configure(
-            "graveyard_body",
-            lmargin1=GRAVEYARD_TEXT_LEFT,
-            lmargin2=GRAVEYARD_TEXT_LEFT,
-        )
-        self.graveyard_rule_redraw_job: str | None = None
-        self.graveyard_scroll = ttk.Scrollbar(
-            editor_shell,
-            orient="vertical",
-            command=self._graveyard_yview,
-        )
-        self.graveyard_text.configure(yscrollcommand=self._graveyard_scrollbar_set)
-        self.graveyard_text.grid(row=0, column=0, sticky="nsew")
-        self.graveyard_scroll.grid(row=0, column=1, sticky="ns")
-
-        # Notebook-paper ruling. These are thin visual overlays only; the
-        # Graveyard remains one continuous tk.Text editor.
-        self.graveyard_rule_widgets: list[tk.Frame] = []
-        self.graveyard_margin_rule = tk.Frame(
-            self.graveyard_text,
-            background="#d58d8d",
-            borderwidth=0,
-            highlightthickness=0,
-            cursor="xterm",
-        )
-        # Red notebook margin: fixed near the left edge while the text scrolls.
-        self.graveyard_margin_rule.place(
-            x=GRAVEYARD_MARGIN_X,
-            y=0,
-            width=GRAVEYARD_MARGIN_WIDTH,
-            relheight=1.0,
-        )
-        self._bind_graveyard_rule_pointer(self.graveyard_margin_rule)
-        self.graveyard_text.bind("<Configure>", self._graveyard_text_configure, add="+")
-        self._schedule_graveyard_rule_redraw()
-
-        saved = str(self.db.get_setting("graveyard_notes", "") or "")
-        if saved:
-            self.graveyard_text.insert("1.0", saved)
-            self.graveyard_text.tag_add("graveyard_body", "1.0", "end")
-        self.graveyard_text.edit_modified(False)
-
-        # Keep normal Text class behavior for Enter, Shift+arrows, mouse selection,
-        # Ctrl+arrows, Delete/Backspace, cut/copy/paste and undo/redo.
-        self.graveyard_text.bind("<<Modified>>", self._graveyard_modified)
-        self.graveyard_text.bind("<Control-a>", self._graveyard_select_all_event)
-        self.graveyard_text.bind("<Control-s>", self._graveyard_save_event)
-        self.graveyard_text.bind("<MouseWheel>", self._on_graveyard_mousewheel)
-        self.graveyard_text.bind("<Button-4>", self._on_graveyard_mousewheel)
-        self.graveyard_text.bind("<Button-5>", self._on_graveyard_mousewheel)
-
-    def _bind_graveyard_rule_pointer(self, widget: tk.Widget) -> None:
-        """Keep the decorative notebook lines from blocking normal text editing."""
-        widget.bind(
-            "<Button-1>",
-            lambda event: self._forward_graveyard_pointer(event, "<Button-1>"),
-        )
-        widget.bind(
-            "<B1-Motion>",
-            lambda event: self._forward_graveyard_pointer(event, "<B1-Motion>"),
-        )
-        widget.bind(
-            "<ButtonRelease-1>",
-            lambda event: self._forward_graveyard_pointer(event, "<ButtonRelease-1>"),
-        )
-
-    def _forward_graveyard_pointer(self, event: tk.Event, sequence: str) -> str:
-        if not hasattr(self, "graveyard_text"):
-            return "break"
-        try:
-            x = int(event.x_root - self.graveyard_text.winfo_rootx())
-            y = int(event.y_root - self.graveyard_text.winfo_rooty())
-            self.graveyard_text.focus_set()
-            self.graveyard_text.event_generate(
-                sequence,
-                x=x,
-                y=y,
-                state=int(getattr(event, "state", 0) or 0),
-            )
-        except tk.TclError:
-            pass
-        return "break"
-
-    def _graveyard_text_configure(self, _event: tk.Event | None = None) -> None:
-        self._schedule_graveyard_rule_redraw()
-
-    def _schedule_graveyard_rule_redraw(self) -> None:
-        """Coalesce rapid scroll/configure events into one notebook-rule redraw."""
-        if not hasattr(self, "graveyard_text"):
-            return
-        if getattr(self, "graveyard_rule_redraw_job", None):
-            return
-
-        def redraw() -> None:
-            self.graveyard_rule_redraw_job = None
-            self._redraw_graveyard_rules()
-
-        try:
-            self.graveyard_rule_redraw_job = self.after_idle(redraw)
-        except tk.TclError:
-            self.graveyard_rule_redraw_job = None
-
-    def _graveyard_scrollbar_set(self, first: str, last: str) -> None:
-        """Update the scrollbar and keep paper rules synchronized with text."""
-        if hasattr(self, "graveyard_scroll") and self.graveyard_scroll.winfo_exists():
-            self.graveyard_scroll.set(first, last)
-        self._schedule_graveyard_rule_redraw()
-
-    def _graveyard_yview(self, *args: str) -> None:
-        """Scrollbar command wrapper so drag/page scrolling also moves the rules."""
-        if not hasattr(self, "graveyard_text"):
-            return
-        self.graveyard_text.yview(*args)
-        self._schedule_graveyard_rule_redraw()
-
-    def _redraw_graveyard_rules(self) -> None:
-        """Draw notebook rules below the actual visible Text rows."""
-        if not hasattr(self, "graveyard_text") or not self.graveyard_text.winfo_exists():
-            return
-
-        for rule in getattr(self, "graveyard_rule_widgets", []):
-            try:
-                rule.destroy()
-            except tk.TclError:
-                pass
-        self.graveyard_rule_widgets = []
-
-        text_widget = self.graveyard_text
-        try:
-            text_widget.update_idletasks()
-            width = max(1, text_widget.winfo_width())
-            height = max(1, text_widget.winfo_height())
-            font = tkfont.Font(font=text_widget.cget("font"))
-            fallback_pitch = max(
-                28,
-                int(font.metrics("linespace"))
-                + GRAVEYARD_LINE_GAP,
-            )
-        except (tk.TclError, TypeError, ValueError):
-            return
-
-        positions: list[int] = []
-        seen_rows: set[int] = set()
-        probe_y = 0
-
-        # dlineinfo() reports the real on-screen row and baseline after wrapping,
-        # scrolling and font changes. Put each blue rule one pixel below the
-        # baseline so the writing rests on it without the overlay hiding ink.
-        while probe_y < height:
-            try:
-                index = text_widget.index(f"@{GRAVEYARD_TEXT_LEFT},{probe_y}")
-                info = text_widget.dlineinfo(index)
-            except tk.TclError:
-                info = None
-
-            if info is None:
-                probe_y += 2
-                continue
-
-            _x, row_y, _row_width, row_height, baseline = info
-            row_y = int(row_y)
-            row_height = max(1, int(row_height))
-            baseline = int(baseline)
-
-            if row_y not in seen_rows:
-                seen_rows.add(row_y)
-                rule_y = row_y + baseline + GRAVEYARD_RULE_BASELINE_OFFSET
-                if 0 <= rule_y < height:
-                    positions.append(rule_y)
-
-            probe_y = max(probe_y + 1, row_y + row_height)
-
-        # Infer the actual visible pitch when possible.  This keeps blank ruled
-        # paper identical to the rows Tk has laid out for the current font.
-        pitch = fallback_pitch
-        if len(positions) >= 2:
-            gaps = [
-                right - left
-                for left, right in zip(positions, positions[1:])
-                if right > left
-            ]
-            if gaps:
-                gaps.sort()
-                pitch = gaps[len(gaps) // 2]
-
-        if positions:
-            y = positions[-1] + pitch
-        else:
-            try:
-                y = int(text_widget.cget("pady")) + pitch
-            except (tk.TclError, TypeError, ValueError):
-                y = 18 + pitch
-
-        while y < height:
-            positions.append(y)
-            y += pitch
-
-        for y in sorted(set(positions)):
-            rule = tk.Frame(
-                text_widget,
-                background="#b6ccdc",
-                borderwidth=0,
-                highlightthickness=0,
-                cursor="xterm",
-            )
-            # The blue rule runs edge-to-edge, including left of the red margin.
-            rule.place(x=0, y=y, width=width, height=1)
-            self._bind_graveyard_rule_pointer(rule)
-            self.graveyard_rule_widgets.append(rule)
-
-        # Red notebook margin stays fixed near the left edge.
-        if hasattr(self, "graveyard_margin_rule"):
-            try:
-                self.graveyard_margin_rule.lift()
-            except tk.TclError:
-                pass
-
-    def _graveyard_virtual_event(self, event_name: str) -> None:
-        if not hasattr(self, "graveyard_text"):
-            return
-        self.graveyard_text.focus_set()
-        self.graveyard_text.event_generate(event_name)
-
-    def _graveyard_undo(self) -> None:
-        if not hasattr(self, "graveyard_text"):
-            return
-        self.graveyard_text.focus_set()
-        try:
-            self.graveyard_text.edit_undo()
-        except tk.TclError:
-            pass
-
-    def _graveyard_redo(self) -> None:
-        if not hasattr(self, "graveyard_text"):
-            return
-        self.graveyard_text.focus_set()
-        try:
-            self.graveyard_text.edit_redo()
-        except tk.TclError:
-            pass
-
-    def _graveyard_select_all(self) -> None:
-        if not hasattr(self, "graveyard_text"):
-            return
-        self.graveyard_text.focus_set()
-        self.graveyard_text.tag_add(tk.SEL, "1.0", "end-1c")
-        self.graveyard_text.mark_set(tk.INSERT, "end-1c")
-        self.graveyard_text.see(tk.INSERT)
-
-    def _graveyard_select_all_event(self, _event: tk.Event) -> str:
-        self._graveyard_select_all()
-        return "break"
-
-    def _graveyard_save_event(self, _event: tk.Event) -> str:
-        self.save_graveyard_notes()
-        return "break"
-
-    def _graveyard_modified(self, _event: tk.Event | None = None) -> None:
-        if not hasattr(self, "graveyard_text"):
-            return
-        if not self.graveyard_text.edit_modified():
-            return
-        # Reset the flag immediately so every subsequent edit produces a new event.
-        self.graveyard_text.edit_modified(False)
-        # A Text tag belongs to characters, so deleting all text also removes
-        # the body margin. Reapply it after every edit so replacement text and
-        # newly created lines always begin to the right of the red rule.
-        self.graveyard_text.tag_add("graveyard_body", "1.0", "end")
-        if hasattr(self, "graveyard_status"):
-            self.graveyard_status.configure(text="Unsaved…")
-        self._schedule_graveyard_save()
-        self._schedule_graveyard_rule_redraw()
-
-    def _schedule_graveyard_save(self, _event: tk.Event | None = None) -> None:
-        if getattr(self, "graveyard_save_job", None):
-            try:
-                self.after_cancel(self.graveyard_save_job)
-            except tk.TclError:
-                pass
-        self.graveyard_save_job = self.after(350, self.save_graveyard_notes)
-
-    def save_graveyard_notes(self) -> None:
-        if not hasattr(self, "graveyard_text"):
-            return
-        if getattr(self, "graveyard_save_job", None):
-            try:
-                self.after_cancel(self.graveyard_save_job)
-            except tk.TclError:
-                pass
-        self.graveyard_save_job = None
-        try:
-            notes = self.graveyard_text.get("1.0", "end-1c")
-        except tk.TclError:
-            return
-        self.db.set_setting("graveyard_notes", notes)
-        if hasattr(self, "graveyard_status"):
-            self.graveyard_status.configure(text="Autosaved")
-
-    def _pointer_over_graveyard(self) -> bool:
-        if self.current_page != "graveyards" or not hasattr(self, "graveyard_text"):
-            return False
-        try:
-            x = self.winfo_pointerx()
-            y = self.winfo_pointery()
-            left = self.graveyard_text.winfo_rootx()
-            top = self.graveyard_text.winfo_rooty()
-            return (
-                left <= x < left + self.graveyard_text.winfo_width()
-                and top <= y < top + self.graveyard_text.winfo_height()
-            )
-        except tk.TclError:
-            return False
-
-    def _on_graveyard_mousewheel(self, event: tk.Event) -> str | None:
-        if not self._pointer_over_graveyard():
-            return None
-        number = getattr(event, "num", None)
-        if number == 4:
-            steps = -1
-        elif number == 5:
-            steps = 1
-        else:
-            delta = int(getattr(event, "delta", 0) or 0)
-            if delta == 0:
-                return None
-            magnitude = max(1, abs(delta) // 120)
-            steps = -magnitude if delta > 0 else magnitude
-        self.graveyard_text.yview_scroll(steps, "units")
-        self._schedule_graveyard_rule_redraw()
-        return "break"
-
-    # ---------- Settings and CSV ----------
-
-    def _build_settings_page(self, page: ttk.Frame) -> None:
-        page.columnconfigure(0, weight=1)
-        page.rowconfigure(0, weight=1)
-        notebook = ttk.Notebook(page)
-        notebook.grid(row=0, column=0, sticky="nsew", padx=18, pady=18)
-        general = ttk.Frame(notebook, padding=16)
-        colors = ttk.Frame(notebook, padding=16)
-        data = ttk.Frame(notebook, padding=16)
-        notebook.add(general, text="General")
-        notebook.add(colors, text="Colours")
-        notebook.add(data, text="CSV")
-
-        ttk.Label(general, text="Default work minutes").grid(row=0, column=0, sticky="w", pady=6)
-        ttk.Spinbox(general, from_=1, to=720, textvariable=self.default_work_minutes, width=8).grid(row=0, column=1, padx=(8, 20), pady=6)
-        ttk.Label(general, text="Default break minutes").grid(row=0, column=2, sticky="w", pady=6)
-        ttk.Spinbox(general, from_=1, to=720, textvariable=self.default_break_minutes, width=8).grid(row=0, column=3, padx=(8, 20), pady=6)
-        ttk.Checkbutton(general, text="Auto-start next timer mode", variable=self.auto_start).grid(row=1, column=0, columnspan=2, sticky="w", pady=8)
-        ttk.Checkbutton(general, text="Lock Linux screen after completed work timer", variable=self.lock_enabled).grid(row=2, column=0, columnspan=4, sticky="w", pady=8)
-
-        ttk.Label(general, text="Graveyard font").grid(row=3, column=0, sticky="w", pady=(10, 6))
-        selected_font = self._selected_graveyard_font()
-        preview_font = self._graveyard_font_spec(
-            selected_font, GRAVEYARD_FONT_PREVIEW_SIZE
-        )
-        self.graveyard_font_var = tk.StringVar(value=selected_font)
-        self.graveyard_font_combo = ttk.Combobox(
-            general,
-            textvariable=self.graveyard_font_var,
-            values=GRAVEYARD_FONT_CHOICES,
-            state="readonly",
-            width=24,
-        )
-        self.graveyard_font_combo.grid(row=3, column=1, sticky="w", padx=(8, 12), pady=(10, 6))
-        self.graveyard_font_combo.bind("<<ComboboxSelected>>", self._preview_graveyard_font)
-
-        self.graveyard_font_preview = tk.Label(
-            general,
-            text="Graveyard",
-            background=self.theme["background"],
-            foreground=self.theme["text"],
-            font=preview_font,
-            anchor="w",
-            padx=6,
-        )
-        self.graveyard_font_preview.grid(
-            row=3,
-            column=2,
-            columnspan=2,
-            sticky="w",
-            padx=(4, 0),
-            pady=(10, 6),
-        )
-
-        ttk.Button(general, text="Save settings", command=self.save_settings).grid(row=4, column=0, sticky="w", pady=(12, 0))
-
-        color_keys = [
-            ("background", "Background"),
-            ("panel", "Panels"),
-            ("accent", "Buttons / accent"),
-            ("hover", "Button hover"),
-            ("text", "Text"),
-            ("muted", "Muted text"),
-            ("field", "Lists / fields"),
-            ("note_paper", "Notes paper"),
-            ("note_text", "Task notes text"),
-            ("graveyard_text", "Graveyards ink"),
-            ("P1", "P1 Critical"),
-            ("P2", "P2 High"),
-            ("P3", "P3 Medium"),
-            ("P4", "P4 Low"),
-        ]
-        self.color_buttons: dict[str, tk.Button] = {}
-        for index, (key, label) in enumerate(color_keys):
-            row, group = divmod(index, 2)
-            column = group * 3
-            ttk.Label(colors, text=label).grid(row=row, column=column, sticky="w", pady=5)
-            button = tk.Button(
-                colors,
-                text=self.theme[key],
-                width=14,
-                background=self.theme[key],
-                foreground=contrast_text(self.theme[key]),
-                command=lambda selected=key: self.choose_color(selected),
-            )
-            button.grid(row=row, column=column + 1, sticky="w", padx=(8, 28), pady=5)
-            self.color_buttons[key] = button
-        opacity_row = (len(color_keys) + 1) // 2
-        self.opacity_var = tk.DoubleVar(value=float(self.theme["opacity"]))
-        ttk.Label(colors, text="Window opacity").grid(row=opacity_row, column=0, sticky="w", pady=(14, 5))
-        ttk.Scale(colors, from_=0.25, to=1.0, variable=self.opacity_var, command=lambda _value: self.attributes("-alpha", self.opacity_var.get())).grid(
-            row=opacity_row, column=1, columnspan=3, sticky="ew", pady=(14, 5)
-        )
-        ttk.Button(colors, text="Save colours", command=self.save_theme).grid(row=opacity_row + 1, column=0, pady=(12, 0))
-        ttk.Button(colors, text="Reset colours", command=self.reset_theme).grid(row=opacity_row + 1, column=1, pady=(12, 0))
-
-        ttk.Label(
-            data,
-            text="Upload task, clock-session, or task-timer CSV files. Exports remain separate.",
-            wraplength=620,
-        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 14))
-        ttk.Button(data, text="Upload CSV", command=self.import_csv).grid(row=1, column=0, padx=(0, 8))
-        ttk.Button(data, text="Export tasks", command=self.export_tasks_csv).grid(row=1, column=1, padx=8)
-        ttk.Button(data, text="Export clock records", command=self.export_work_csv).grid(row=1, column=2, padx=8)
-        ttk.Button(data, text="Export task timers", command=self.export_pomodoro_csv).grid(row=2, column=1, padx=8, pady=8)
-
-    def save_settings(self) -> None:
-        try:
-            work = max(1, min(720, int(self.default_work_minutes.get())))
-            break_minutes = max(1, min(720, int(self.default_break_minutes.get())))
-        except (ValueError, tk.TclError):
-            return
-        self.default_work_minutes.set(work)
-        self.default_break_minutes.set(break_minutes)
-        self.db.set_setting("work_minutes", work)
-        self.db.set_setting("rest_minutes", break_minutes)
-        self.db.set_setting("auto_start", bool(self.auto_start.get()))
-        self.db.set_setting("lock_enabled", bool(self.lock_enabled.get()))
-        self._apply_graveyard_font(persist=True)
-        if self.timer_task_id is None and not self.timer_running:
-            self.timer_remaining = self._task_duration_seconds(None, self.timer_mode)
-        self._save_timer_state()
-        self._update_timer_labels()
-
-    def choose_color(self, key: str) -> None:
-        chosen = colorchooser.askcolor(color=self.theme[key], parent=self)[1]
-        if not chosen:
-            return
-        self.theme[key] = chosen
-        button = self.color_buttons[key]
-        button.configure(text=chosen, background=chosen, foreground=contrast_text(chosen))
-
-    def save_theme(self) -> None:
-        self.theme["opacity"] = float(self.opacity_var.get())
-        self.db.set_setting("theme", self.theme)
-        self._rebuild_ui_for_theme()
-
-    def reset_theme(self) -> None:
-        self.theme = dict(DEFAULT_THEME)
-        self.db.set_setting("theme", self.theme)
-        self._rebuild_ui_for_theme()
-
-    def _rebuild_ui_for_theme(self, *, save_graveyard: bool = True) -> None:
-        if save_graveyard:
-            self.save_graveyard_notes()
-        self._apply_theme()
-        for child in self.winfo_children():
-            child.destroy()
-        self.pages = {}
-        self.nav_buttons = {}
-        self._build_ui()
-        self.refresh_all()
-        self.show_page(self.current_page if self.current_page in self.pages else "tasks")
-
-    def import_csv(self) -> None:
-        filename = filedialog.askopenfilename(parent=self, filetypes=[("CSV files", "*.csv"), ("All files", "*")])
-        if not filename:
-            return
-        imported = 0
-        skipped = 0
-        try:
-            with open(filename, newline="", encoding="utf-8-sig") as handle:
-                reader = csv.DictReader(handle)
-                headers = [str(item or "").strip().lower() for item in (reader.fieldnames or [])]
-                rows = list(reader)
-            if not headers:
-                raise ValueError("CSV has no header row.")
-            if "start_at" in headers and "end_at" in headers:
-                for row in rows:
-                    try:
-                        start_at = row.get("start_at") or ""
-                        end_at = row.get("end_at") or ""
-                        work_date = row.get("work_date") or start_at[:10]
-                        seconds = int(row.get("worked_seconds") or 0)
-                        self.db.add_work_session(work_date, start_at, end_at, seconds)
-                        imported += 1
-                    except (ValueError, TypeError):
-                        skipped += 1
-            elif "started_at" in headers and "ended_at" in headers:
-                for row in rows:
-                    try:
-                        task_id = int(row["task_id"]) if row.get("task_id") else None
-                        inserted = self.db.add_pomodoro_session(
-                            task_id,
-                            row.get("started_at") or "",
-                            row.get("ended_at") or "",
-                            int(row.get("planned_seconds") or 0),
-                            int(row.get("actual_seconds") or 0),
-                            str(row.get("completed", "1")).strip().lower() in ("1", "true", "yes"),
-                        )
-                        imported += int(inserted)
-                        skipped += int(not inserted)
-                    except (ValueError, TypeError):
-                        skipped += 1
-            else:
-                title_header = next((name for name in ("title", "task", "name", "description") if name in headers), None)
-                if not title_header:
-                    title_header = headers[0]
-                existing = {str(task["title"]).strip().lower() for task in self.db.all_tasks()}
-                for row in rows:
-                    normalized = {str(key or "").strip().lower(): value for key, value in row.items()}
-                    title = " ".join(str(normalized.get(title_header, "")).split())
-                    if not title or title.lower() in existing:
-                        skipped += 1
-                        continue
-                    values = {
-                        "title": title,
-                        "notes": normalized.get("notes", ""),
-                        "priority": normalized.get("priority", "P4") if normalized.get("priority", "P4") in PRIORITY_LABELS else "P4",
-                        "task_work_minutes": int(normalized.get("task_work_minutes") or normalized.get("work_minutes") or self.default_work_minutes.get()),
-                        "task_break_minutes": int(normalized.get("task_break_minutes") or normalized.get("break_minutes") or self.default_break_minutes.get()),
-                        "deadline": normalized.get("deadline") or None,
-                        "tracking_mode": normalized.get("tracking_mode", "both") if normalized.get("tracking_mode", "both") in TRACKING_LABELS else "both",
-                    }
-                    self.db.create_task(values)
-                    existing.add(title.lower())
-                    imported += 1
-        except (OSError, csv.Error, ValueError) as exc:
-            messagebox.showerror(APP_NAME, str(exc), parent=self)
-            return
-        self.refresh_all()
-        messagebox.showinfo(APP_NAME, f"Imported {imported}. Skipped {skipped}.", parent=self)
-
-    def _export_path(self, suggested: str) -> str:
-        return filedialog.asksaveasfilename(
-            parent=self,
-            defaultextension=".csv",
-            initialfile=suggested,
-            filetypes=[("CSV files", "*.csv")],
-        )
-
-    def export_tasks_csv(self) -> None:
-        filename = self._export_path("pimodoro_tasks.csv")
-        if not filename:
-            return
-        rows = self.db.all_tasks()
-        fields = [
-            "id", "title", "notes", "priority", "status", "tracking_mode",
-            "task_work_minutes", "task_break_minutes", "folder_id", "manual_seconds",
-            "pomodoro_estimate", "pomodoro_completed", "deadline",
-            "recurrence_enabled", "recurrence_kind", "recurrence_interval",
-            "recurrence_weekdays", "recurrence_start", "recurrence_end", "recurrence_max",
-            "created_at", "updated_at", "completed_at", "archived_at",
-        ]
-        with open(filename, "w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
-            writer.writeheader()
-            writer.writerows(rows)
-
-    def export_work_csv(self) -> None:
-        filename = self._export_path("pimodoro_clock_records.csv")
-        if not filename:
-            return
-        rows = self.db.work_sessions()
-        fields = ["id", "work_date", "start_at", "end_at", "worked_seconds", "created_at"]
-        with open(filename, "w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
-            writer.writeheader()
-            writer.writerows(rows)
-
-    def export_pomodoro_csv(self) -> None:
-        filename = self._export_path("pimodoro_task_timers.csv")
-        if not filename:
-            return
-        rows = self.db.all_pomodoros()
-        fields = ["id", "task_id", "task_title", "occurrence_date", "started_at", "ended_at", "planned_seconds", "actual_seconds", "completed"]
-        with open(filename, "w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
-            writer.writeheader()
-            writer.writerows(rows)
-
-    # ---------- Refresh and lifecycle ----------
-
-    def refresh_all(self) -> None:
-        if hasattr(self, "task_list_inner"):
-            self.render_tasks()
-        if hasattr(self, "project_folder_grid"):
-            self.refresh_project_folders()
-        if hasattr(self, "history_tree"):
-            self.refresh_history()
-        if hasattr(self, "calendar_grid"):
-            self.refresh_calendar()
-        self._update_timer_labels()
-        self._update_daily_totals_label()
-        self._refresh_clock_button()
-
-    def _tick_header(self) -> None:
-        now = datetime.now().astimezone()
-        today_date = now.date()
-        if today_date != self.last_housekeeping_date:
-            self.db.archive_completed_before(today_date)
-            self.last_housekeeping_date = today_date
-            self.refresh_all()
-        self.header_date.configure(text=now.strftime("%A, %d %B %Y"))
-        self.header_time.configure(text=now.strftime("%H:%M:%S"))
-        today = date.today().isoformat()
-        clocked = self.db.work_seconds(today) + self._live_clock_seconds_today()
-        self.header_totals.configure(text=f"Clocked {format_duration(clocked)}")
-        self.sidebar_work_total.configure(text=f"Today {format_duration(clocked)}")
-        self.after(1000, self._tick_header)
-
-    def close_app(self) -> None:
-        self.save_graveyard_notes()
-        self.save_open_accordions()
-        self.pause_timer()
-        self._save_clock_state()
-        self.db.close()
-        self.destroy()
+    def live_clock(self): return int((datetime.now().astimezone() - self.clock_started).total_seconds()) if self.clock_started else 0
+    def every_second(self):
+        now = datetime.now().astimezone(); self.header_date.setText(now.strftime("%A, %d %B %Y")); self.header_time.setText(now.strftime("%H:%M:%S"))
+        total = self.db.work_seconds(date.today().isoformat()) + self.live_clock(); self.header_total.setText(f"Clocked {format_duration(total)}"); self.clock_total.setText(f"Today {format_duration(total)}"); self.clock_button.setText("Clock out" if self.clock_started else "Clock in")
+        if self.timer_running:
+            self.timer_remaining -= 1
+            if self.timer_remaining <= 0: self.complete_timer()
+            else: self.refresh_timer_labels()
+
+    def refresh_all(self):
+        self.refresh_today(); self.refresh_projects(); self.refresh_calendar_detail(); self.refresh_history(); self.refresh_timer_labels(); self.every_second()
+        total = self.db.work_seconds(date.today().isoformat()) + self.live_clock(); self.work_total.setText(f"Total work today: {format_duration(total)}"); self.break_total.setText("Pomodoro timer")
+    def closeEvent(self, event): self.save_graveyard(); self.db.close(); event.accept()
+
+
+def main() -> int:
+    app = QApplication(sys.argv); register_fonts(); window = PiModoro(); window.show(); return app.exec()
 
 
 if __name__ == "__main__":
-    PiModoro().mainloop()
+    raise SystemExit(main())

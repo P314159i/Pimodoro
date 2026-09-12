@@ -12,6 +12,7 @@ FONT_DIR="$HOME/.local/share/fonts"
 MIGHTY_FONT_FILE="$APP_DIR/misc/Mighty-X34Z2.ttf"
 HEAD_FONT_FILE="$APP_DIR/misc/Head.ttf"
 FLIGHTY_FONT_FILE="$APP_DIR/misc/Flighty.ttf"
+EMOJI_FONT_FILE="$APP_DIR/misc/NotoColorEmoji-Regular.ttf"
 ICON_FILE="$APP_DIR/misc/pomo.png"
 
 echo "Installing PiModoro..."
@@ -32,12 +33,6 @@ if ! command -v python3 >/dev/null 2>&1; then
     exit 1
 fi
 
-if ! python3 -c "import tkinter" >/dev/null 2>&1; then
-    echo "Error: Tkinter is missing. On Linux Mint/Ubuntu run:"
-    echo "  sudo apt install python3-tk"
-    exit 1
-fi
-
 if [ ! -x "$VENV/bin/python" ]; then
     echo "Creating Python virtual environment..."
     if ! python3 -m venv "$VENV"; then
@@ -47,15 +42,13 @@ if [ ! -x "$VENV/bin/python" ]; then
     fi
 fi
 
-if [ -f "$REQUIREMENTS_FILE" ]; then
-    echo "Checking Python requirements..."
-    "$VENV/bin/python" -m pip install -r "$REQUIREMENTS_FILE"
-fi
+echo "Installing PySide6..."
+"$VENV/bin/python" -m pip install PySide6
 
 # Install bundled fonts for the current user.
 mkdir -p "$FONT_DIR"
 
-for FONT_FILE in "$MIGHTY_FONT_FILE" "$HEAD_FONT_FILE" "$FLIGHTY_FONT_FILE"; do
+for FONT_FILE in "$MIGHTY_FONT_FILE" "$HEAD_FONT_FILE" "$FLIGHTY_FONT_FILE" "$EMOJI_FONT_FILE"; do
     if [ -f "$FONT_FILE" ]; then
         echo "Installing $(basename "$FONT_FILE")..."
         cp -f "$FONT_FILE" "$FONT_DIR/"
