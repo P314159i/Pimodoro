@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QApplication, QCalendarWidget, QCheckBox, QColorDialog, QComboBox, QDialog,
     QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
-    QPushButton, QScrollArea, QSpinBox, QStackedWidget, QTableWidget,
+    QPushButton, QScrollArea, QSpinBox, QDoubleSpinBox, QStackedWidget, QTableWidget,
     QTableWidgetItem, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
@@ -51,6 +51,15 @@ def parse_date(text: str) -> str | None:
     if not text:
         return None
     return date.fromisoformat(text).isoformat()
+
+
+def contrast_text(hex_color: str) -> str:
+    try:
+        color = QColor(hex_color)
+        luminance = 0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()
+        return "#111111" if luminance > 165 else "#ffffff"
+    except Exception:
+        return "#ffffff"
 
 
 def confirm(parent: QWidget, title: str, text: str) -> bool:
@@ -106,7 +115,7 @@ class TaskDialog(QDialog):
         selected_folder = self.task.get("folder_id") or folder_id
         index = self.folder.findData(int(selected_folder)) if selected_folder else 0
         self.folder.setCurrentIndex(max(0, index))
-        self.notes = QTextEdit(str(self.task.get("notes", "")))
+        self.notes = QTextEdit(str(self.task.get("notes", ""))); self.notes.setObjectName("noteEditor")
         self.subtasks = QTextEdit()
         if task:
             self.subtasks.setPlainText("\n".join(str(x["text"]) for x in db.get_subtasks(int(task["id"]))))
@@ -272,6 +281,7 @@ class PiModoro(QMainWindow):
             QPushButton {{background:{t['accent']}; color:{t['text']}; border:0; border-radius:5px; padding:6px 9px;}}
             QPushButton:hover {{background:{t['hover']};}}
             QLineEdit,QTextEdit,QComboBox,QSpinBox,QTableWidget,QListWidget,QCalendarWidget {{background:{t['field']}; color:{t['text']}; border:1px solid {t['accent']}; padding:4px;}}
+            QTextEdit#noteEditor {{background:{t['note_paper']}; color:{t['note_text']};}}
             QHeaderView::section {{background:{t['panel']}; color:{t['text']}; padding:5px; border:0;}}
         """)
 
@@ -429,7 +439,7 @@ class PiModoro(QMainWindow):
         if task_id: self.db.archive_task(task_id); self.refresh_all()
 
     def build_graveyard(self, page):
-        root = QVBoxLayout(page); root.addWidget(QLabel("Graveyard notebook")); self.graveyard = QTextEdit(); self.graveyard.setAcceptRichText(False); self.graveyard.setPlainText(str(self.db.get_setting("graveyard_notes", ""))); root.addWidget(self.graveyard, 1)
+        root = QVBoxLayout(page); root.addWidget(QLabel("Graveyard notebook")); self.graveyard = QTextEdit(); self.graveyard.setObjectName("noteEditor"); self.graveyard.setAcceptRichText(False); self.graveyard.setPlainText(str(self.db.get_setting("graveyard_notes", ""))); root.addWidget(self.graveyard, 1)
         save = QPushButton("Save"); save.clicked.connect(self.save_graveyard); root.addWidget(save)
     def save_graveyard(self): self.db.set_setting("graveyard_notes", self.graveyard.toPlainText())
 
@@ -437,12 +447,38 @@ class PiModoro(QMainWindow):
         root = QVBoxLayout(page); form = QFormLayout(); self.work_setting = QSpinBox(); self.work_setting.setRange(1, 720); self.work_setting.setValue(int(self.db.get_setting("work_minutes", 25)))
         self.break_setting = QSpinBox(); self.break_setting.setRange(1, 720); self.break_setting.setValue(int(self.db.get_setting("rest_minutes", 5)))
         self.lock_setting = QCheckBox(); self.lock_setting.setChecked(bool(self.db.get_setting("lock_enabled", False))); form.addRow("Default work minutes", self.work_setting); form.addRow("Default break minutes", self.break_setting); form.addRow("Lock screen after work", self.lock_setting); root.addLayout(form)
-        save = QPushButton("Save settings"); save.clicked.connect(self.save_settings); root.addWidget(save)
+        self.opacity_setting = QDoubleSpinBox(); self.opacity_setting.setRange(0.20, 1.00); self.opacity_setting.setSingleStep(0.05); self.opacity_setting.setDecimals(2); self.opacity_setting.setValue(float(self.theme["opacity"])); form.addRow("Window opacity", self.opacity_setting)
+        root.addWidget(QLabel("Colours"))
+        color_grid = QGridLayout(); self.color_buttons = {}
+        color_labels = {
+            "background": "Background", "panel": "Side panel", "accent": "Buttons",
+            "hover": "Button hover", "text": "Main text", "muted": "Muted text",
+            "field": "Input fields", "note_paper": "Notes paper", "note_text": "Notes text",
+            "P1": "P1 Critical", "P2": "P2 High", "P3": "P3 Medium", "P4": "P4 Low",
+        }
+        for index, (key, label) in enumerate(color_labels.items()):
+            row, column = divmod(index, 2)
+            box = QHBoxLayout(); box.addWidget(QLabel(label))
+            button = QPushButton(self.theme[key]); button.clicked.connect(lambda _=False, k=key: self.choose_theme_color(k)); self.color_buttons[key] = button; self.update_color_button(key); box.addWidget(button)
+            color_grid.addLayout(box, row, column)
+        root.addLayout(color_grid)
+        settings_actions = QHBoxLayout(); save = QPushButton("Save settings and colours"); save.clicked.connect(self.save_settings); reset = QPushButton("Reset colours"); reset.clicked.connect(self.reset_theme); settings_actions.addWidget(save); settings_actions.addWidget(reset); settings_actions.addStretch(); root.addLayout(settings_actions)
         exports = QHBoxLayout()
         for text, kind in (("Export tasks CSV", "tasks"), ("Export work CSV", "work"), ("Export pomodoros CSV", "pomodoros")):
             b = QPushButton(text); b.clicked.connect(lambda _=False, k=kind: self.export_csv(k)); exports.addWidget(b)
         root.addLayout(exports); root.addStretch()
-    def save_settings(self): self.db.set_setting("work_minutes", self.work_setting.value()); self.db.set_setting("rest_minutes", self.break_setting.value()); self.db.set_setting("lock_enabled", self.lock_setting.isChecked())
+    def update_color_button(self, key):
+        color = self.theme[key]; self.color_buttons[key].setText(color); self.color_buttons[key].setStyleSheet(f"background:{color};color:{contrast_text(color)};padding:6px 12px")
+    def choose_theme_color(self, key):
+        selected = QColorDialog.getColor(QColor(self.theme[key]), self, f"Choose {key.replace('_', ' ')}")
+        if selected.isValid(): self.theme[key] = selected.name(); self.update_color_button(key)
+    def save_settings(self):
+        self.db.set_setting("work_minutes", self.work_setting.value()); self.db.set_setting("rest_minutes", self.break_setting.value()); self.db.set_setting("lock_enabled", self.lock_setting.isChecked())
+        self.theme["opacity"] = self.opacity_setting.value(); self.db.set_setting("theme", self.theme); self.setWindowOpacity(float(self.theme["opacity"])); self.apply_theme(); self.refresh_all()
+    def reset_theme(self):
+        self.theme = dict(DEFAULT_THEME); self.opacity_setting.setValue(float(self.theme["opacity"]))
+        for key in self.color_buttons: self.update_color_button(key)
+        self.db.set_setting("theme", self.theme); self.setWindowOpacity(float(self.theme["opacity"])); self.apply_theme(); self.refresh_all()
     def export_csv(self, kind):
         path, _ = QFileDialog.getSaveFileName(self, "Export CSV", f"pimodoro_{kind}.csv", "CSV (*.csv)")
         if not path: return
