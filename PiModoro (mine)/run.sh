@@ -1,6 +1,0 @@
-#!/bin/bash
-set -e
-
-APP_DIR="$(cd "$(dirname "$0")" && pwd)"
-
-exec "$APP_DIR/.venv/bin/python" "$APP_DIR/Src/app.py"
